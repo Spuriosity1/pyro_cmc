@@ -51,6 +51,7 @@ g_deps = [
     hdf5_dep
     ]
 
+
 mc_lib = static_library('cmc_lib',
   files('src/MC.cpp', 'src/stats.cpp'),
   dependencies: g_deps,
@@ -74,4 +75,5 @@ bzdump = executable('bzdump',
   install: true
   )
 
+subdir('test')
 
