@@ -7,7 +7,7 @@ project('spiral_anneal_CMC', ['cpp', 'c'],
 
 json_dep = dependency('nlohmann_json', required: true)
 
-latlib_dep = dependency('liblatindex', version: '>=1.1')
+latlib_dep = dependency('lattice_lib', version: '>= 2.2.0')
 
 fftw_dep = dependency('fftw3', required: true)
 
@@ -66,14 +66,6 @@ anneal_bin = executable('anneal',
   install: true
   )
 
-
-bzdump = executable('bzdump', 
-  files('src/bzdump.cpp'),
-  dependencies: g_deps,
-  link_with: mc_lib,
-  include_directories: CMC_inc,
-  install: true
-  )
 
 subdir('test')
 

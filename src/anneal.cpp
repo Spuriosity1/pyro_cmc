@@ -6,7 +6,6 @@
 
 
 #include "MC.hpp"
-#include "lattice_IO.hpp"
 #include "stats.hpp"
 #include "energy_manager.hpp"
 #include "pyrochlore_geometry.hpp"
@@ -144,17 +143,10 @@ int main (int argc, char *argv[]) {
     ss >> seed; 
 
 
-    // parse L1 L2 L3
-//    name << parse_supercell_spec(supercell_spec, prog);
-//    std::cout<<"Constructing supercell of dimensions \n"<<supercell_spec<<std::endl;
     int L = prog.get<int>("L");
-    auto supercell_spec = imat33_t::from_cols( {-L, L, L}, {L, -L, L}, {L, L, -L});
-
-    ////////////////////////////////////////////////////////////////////////////////
-
-
-    const auto spec = CellGeometry::PrimitiveSpecifiers::DiamondSpec();
-    CMC::Lattice lat(spec, supercell_spec); 
+    auto supercell_spec = imat33_t::from_cols({-L, L, L}, {L, -L, L}, {L, L, -L});
+    auto cell_spec = DiamondSpinSpec();
+    CMC::Lattice lat = build_supercell(cell_spec, supercell_spec);
 
     auto J1 = prog.get<double>("--J1");
 //    auto K1 = prog.get<double>("--K1");
@@ -223,7 +215,7 @@ int main (int argc, char *argv[]) {
 
         double E = e_manager.curr_E();
         printf("Iter %4zu T=%.3e E=%3e Acceptance rate: %.2f%%\n", 
-                i, T, E, accepted*100.0/lat.links.size()/n_sweep);
+                i, T, E, accepted*100.0/lat.get_objects<HeisenbergSpin>().size()/n_sweep);
         T *= factor;
     }
 
@@ -249,6 +241,7 @@ int main (int argc, char *argv[]) {
     }
     ssf_manager.write_group(file_id, "/ssf");
     e_manager.write_group(file_id, "/energy");
+    write_geometry_group(file_id, lat);
     
     if (prog.get<bool>("--save_state")){
         auto f = outdir /( name.str() + ".spins.h5" );
