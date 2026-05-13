@@ -33,11 +33,23 @@ int main (int argc, char *argv[]) {
 
     prog.add_argument("L")
         .help("Linear dimension of cubic supercell")
-        .scan<'i', int>();
-    
+        .scan<'i', int>();  
     prog.add_argument("Q")
         .nargs(3)
         .scan<'i', int>();
+
+    prog.add_argument("--J1")
+        .help("Nearest-neighbour Heisenberg coupling strength")
+        .required()
+        .scan<'g', double>();
+    prog.add_argument("--J2")
+        .help("Second-nearest-neighbour Heisenberg coupling strength")
+        .default_value(0.)
+        .scan<'g', double>();
+    prog.add_argument("--J3")
+        .help("Third-nearest-neighbour Heisenberg coupling strength")
+        .default_value(0.)
+        .scan<'g', double>();
 
     try {
         prog.parse_args(argc, argv);
@@ -62,8 +74,18 @@ int main (int argc, char *argv[]) {
     CMC::Lattice lat = build_supercell(cell_spec, supercell_spec);
 
     CMC::MC_runner mc(lat, 0);
-    mc.setup_lattice();
 
+    auto J1 = prog.get<double>("--J1");
+    auto J2 = prog.get<double>("--J2");
+    auto J3 = prog.get<double>("--J3");
+    mc.define_coupling("J1", pyrochlore::nn1_dist, 
+        mat33d::from_cols({J1, 0,0}, {0,J1, 0}, {0,0,J1})
+        );
+    mc.define_coupling("J2", pyrochlore::nn2_dist, J2*coupling::Heis);
+    mc.define_coupling("J3a", pyrochlore::nn3a_dist, J3*coupling::Heis);
+    mc.define_coupling("J3b", pyrochlore::nn3b_dist, J3*coupling::Heis);
+
+    mc.setup_lattice();
 
     auto Q_vec =prog.get<std::vector<int>>("Q");
     ivec3_t Q {Q_vec[0], Q_vec[1], Q_vec[2]};
@@ -87,8 +109,11 @@ int main (int argc, char *argv[]) {
     e_manager.new_T(0);
 
 
+    double total_E = mc.total_energy_per_unit_cell();
     ssfm.sample();
-    e_manager.sample(0);
+    e_manager.sample(total_E);
+
+    std::cout<<"Total E = "<<total_E<<std::endl;
 
 
     auto file_path = outdir / (name.str() + ".out.h5");
