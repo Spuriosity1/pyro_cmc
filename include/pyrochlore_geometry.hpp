@@ -9,7 +9,7 @@
  * 16 spin sublattices = 4 FCC sites × 4 link directions.
  * Sublattice ordering: pyrochlore_sl = latlib_sl % 4.
  */
-inline UnitCellSpecifier<CMC::HeisenbergSpin> DiamondSpinSpec() {
+inline UnitCellSpecifier<CMC::HeisenbergSpin> PyroCubicCell() {
     UnitCellSpecifier<CMC::HeisenbergSpin> spec(
         imat33_t::from_cols({8,0,0}, {0,8,0}, {0,0,8}));
 
@@ -29,6 +29,24 @@ inline UnitCellSpecifier<CMC::HeisenbergSpin> DiamondSpinSpec() {
     }
     return spec;
 }
+
+
+inline UnitCellSpecifier<CMC::HeisenbergSpin> PrimitiveCell() {
+    UnitCellSpecifier<CMC::HeisenbergSpin> spec(
+        imat33_t::from_cols({8,0,0}, {0,8,0}, {0,0,8}));
+
+    static constexpr ipos_t link_positions[4] = {
+        {1,1,1}, {1,-1,-1}, {-1,1,-1}, {-1,-1,1}
+    };
+
+    for (const auto& x : link_positions) {
+        CMC::HeisenbergSpin spin;
+        spin.ipos = x;
+        spec.add(std::move(spin));
+    }
+    return spec;
+}
+
 
 
 namespace pyrochlore {

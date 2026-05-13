@@ -6,6 +6,7 @@
 #include <ostream>
 
 
+#include "ssf_manager.hpp"
 #include "stats.hpp"
 #include "energy_manager.hpp"
 #include "pyrochlore_geometry.hpp"
@@ -31,14 +32,12 @@ int main (int argc, char *argv[]) {
         .help("Path to output")
         .required();
 
-    std::string seed_s;
-    prog.add_argument("--seed", "-s")
-        .required()
-        .help("64-bit int to seed the RNG")
-        .store_into(seed_s);
-
     prog.add_argument("L")
         .help("Linear dimension of cubic supercell")
+        .scan<'i', int>();
+    
+    prog.add_argument("Q")
+        .nargs(3)
         .scan<'i', int>();
 
     try {
@@ -56,31 +55,42 @@ int main (int argc, char *argv[]) {
     if (!filesystem::exists(outdir))
         throw runtime_error("Cannot open outdir");
 
-    uint64_t seed;
-    std::stringstream ss;
-    ss << std::hex << seed_s;
-    ss >> seed;
 
     int L = prog.get<int>("L");
-    double q = static_cast<double>(L);
-    auto supercell_spec = imat33_t::from_cols({-L, L, L}, {L, -L, L}, {L, L, -L});
+    auto supercell_spec = imat33_t::from_cols({L, 0, 0}, {0, L, 0}, {0, 0, L});
 
-    auto cell_spec = DiamondSpinSpec();
+    auto cell_spec = PyroCubicCell();
     CMC::Lattice lat = build_supercell(cell_spec, supercell_spec);
 
-    CMC::MC_runner mc(lat, seed);
+    CMC::MC_runner mc(lat, 0);
     mc.setup_lattice();
 
+
+    auto Q_vec =prog.get<std::vector<int>>("Q");
+    ivec3_t Q {Q_vec[0], Q_vec[1], Q_vec[2]};
+
     name << "L=" << L << DELIM
-         << "q=" << q << DELIM;
+         << "q=" << Q << DELIM;
 
-    static_corr_3D ssf_manager(lat);
+    ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1);
+    energy_manager e_manager;
 
-    ssf_manager.declare_observable("SdotS",
-            static_corr_3D::NEEDS_XX | static_corr_3D::NEEDS_YY | static_corr_3D::NEEDS_ZZ);
-    ssf_manager.declare_observable("SzSz", static_corr_3D::NEEDS_ZZ);
 
-    ssf_manager.sample();
+    auto q = lat.lattice.wavevector_from_idx3(Q);
+
+    for (auto& s : lat.get_objects<HeisenbergSpin>() ){
+        vector3::vec3d r = s.ipos;
+        auto phase = dot(q, r);
+        s.S = {0, std::cos(phase), std::sin(phase)};
+    }
+
+    ssfm.new_T(0);
+    e_manager.new_T(0);
+
+
+    ssfm.sample();
+    e_manager.sample(0);
+
 
     auto file_path = outdir / (name.str() + ".out.h5");
 
@@ -88,7 +98,11 @@ int main (int argc, char *argv[]) {
             H5P_DEFAULT, H5P_DEFAULT);
     if (file_id < 0)
         throw std::runtime_error("Failed to create HDF5 file: " + file_path.string());
-    ssf_manager.write_group(file_id, "/ssf");
+    ssfm.write_group(file_id, "/ssf");
+    e_manager.write_group(file_id, "/energy");
+    write_geometry_group(file_id, lat);
+    std::cout<<"Saved to \n"<< file_path<<std::endl;
+
 
     auto f = outdir / (name.str() + ".spins.h5");
     printf("Saving spin state to %s\n", f.string().c_str());

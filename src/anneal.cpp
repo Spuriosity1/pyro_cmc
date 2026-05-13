@@ -6,7 +6,7 @@
 
 
 #include "MC.hpp"
-#include "stats.hpp"
+#include "ssf_manager.hpp"
 #include "energy_manager.hpp"
 #include "pyrochlore_geometry.hpp"
 #include "format_bits.hpp"
@@ -144,8 +144,8 @@ int main (int argc, char *argv[]) {
 
 
     int L = prog.get<int>("L");
-    auto supercell_spec = imat33_t::from_cols({-L, L, L}, {L, -L, L}, {L, L, -L});
-    auto cell_spec = DiamondSpinSpec();
+    auto supercell_spec = imat33_t::from_cols({L,0,0},{0,L,0},{0,0,L});
+    auto cell_spec = PyroCubicCell();
     CMC::Lattice lat = build_supercell(cell_spec, supercell_spec);
 
     auto J1 = prog.get<double>("--J1");
@@ -219,18 +219,15 @@ int main (int argc, char *argv[]) {
         T *= factor;
     }
 
-    static_corr_3D ssf_manager(lat);
-
-    ssf_manager.declare_observable("SdotS", 
-            static_corr_3D::NEEDS_XX | static_corr_3D::NEEDS_YY | static_corr_3D::NEEDS_ZZ );
-    ssf_manager.declare_observable("SzSz", static_corr_3D::NEEDS_ZZ);
+    ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1);
+    ssfm.new_T(T);
 
     printf("Sampling at T=%lf (%zu sweeps)...\n", T, n_sample);
     for (size_t i=0; i<n_sample; i++){
         for (size_t n=0; n<n_sweep; n++){
             mc.sweep_local_Metropolis(T);
         }
-        ssf_manager.sample();
+        ssfm.sample();
     }
 
     auto file_path = outdir/( name.str() + ".out.h5");
@@ -239,17 +236,17 @@ int main (int argc, char *argv[]) {
     if (file_id < 0) {
         throw std::runtime_error("Failed to create HDF5 file: " + file_path.string());
     }
-    ssf_manager.write_group(file_id, "/ssf");
+
+    ssfm.write_group(file_id, "/ssf");
     e_manager.write_group(file_id, "/energy");
     write_geometry_group(file_id, lat);
+    std::cout<<"Saved to \n"<< file_path<<std::endl;
     
     if (prog.get<bool>("--save_state")){
         auto f = outdir /( name.str() + ".spins.h5" );
         printf("Saving spin state to %s\n", f.string().c_str());
         save_spin_state(lat, f);
     }
-
-
 
     return 0;
 }

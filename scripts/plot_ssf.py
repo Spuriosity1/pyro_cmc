@@ -11,79 +11,136 @@ import matplotlib.colors as mcolors
 
 def load_file(path):
     with h5py.File(path, "r") as f:
-        recip = f["/geometry/recip_vectors"][:]   # (3, 3), rows are a*, b*, c*
-        index_cell = f["/geometry/index_cell"][:]  # (3, 3)
+        recip      = f["/geometry/recip_vectors"][:]   # (3,3) rows are b0,b1,b2
+        index_cell = f["/geometry/index_cell"][:]
 
         T_list = f["/energy/T_list"][:]
         E      = f["/energy/E"][:]
         E2     = f["/energy/E2"][:]
         n_E    = f["/energy/n_samples"][:]
 
-        SdotS    = f["/ssf/SdotS"][:]     # (n_T, Nk0, Nk1)
-        SzSz     = f["/ssf/SzSz"][:]
-        n_ssf    = f["/ssf/n_samples"][:]
-    return recip, index_cell, T_list, E, E2, n_E, SdotS, SzSz, n_ssf
+        raw          = f["/ssf/static_corr"][:]   # [n_corr, n_T, n_k, n_sl, n_sl, 2]
+        corr_lookup  = [s.decode() if isinstance(s, bytes) else s
+                        for s in f["/ssf/corr_lookup"][:]]
+        sl_positions = f["/ssf/sl_positions"][:]  # [n_sl, 3] int64
+        k_dims       = f["/ssf"].attrs["k_dims"][:].astype(int)   # [3]
+        n_spins      = int(f["/ssf"].attrs["n_spins"])
+        ssf_T        = f["/ssf/T_list"][:]        # sorted ascending
+        n_ssf        = f["/ssf/n_samples"][:]
+
+    corr = raw[..., 0] + 1j * raw[..., 1]  # [n_corr, n_T, n_k, n_sl, n_sl]
+    return (recip, index_cell,
+            T_list, E, E2, n_E,
+            corr, corr_lookup, sl_positions, k_dims, n_spins, ssf_T, n_ssf)
 
 
-def kgrid_coords(N0, N1, recip, index_cell):
+def compute_phase_factors(k_dims, sl_positions):
+    """Return w[k_flat, mu, nu] = exp(2πi Σ_j K_j*(r_mu-r_nu)_j / k_dims_j).
+
+    This is the sublattice structure-factor phase correction needed because
+    the raw DFT does not include exp(-i q·r_mu).  Uses the identity
+    b_i · a_j = 2π δ_{ij}, so q · r = 2π Σ_j K_j * r_j / k_dims_j when
+    r is expressed in fractional primitive-cell coordinates (integers for
+    sublattice positions stored in sl_positions).
     """
-    Return (x, y) arrays of k-point positions in Cartesian reciprocal space.
+    k0, k1, k2 = k_dims
+    K0, K1, K2 = np.mgrid[0:k0, 0:k1, 0:k2]
+    K = np.stack([K0.ravel(), K1.ravel(), K2.ravel()], axis=1)  # [n_k, 3]
 
-    The BZ grid is assumed to span the first two rows of recip_vectors,
-    with points at h/N0 * b0 + k/N1 * b1 for h in [0,N0), k in [0,N1).
-    index_cell encodes the supercell, so reciprocal grid spacing is
-    b_i / index_cell[i,i] if diagonal, generalised below.
+    K_scaled = K / k_dims                          # [n_k, 3], fractional
+    dr = (sl_positions[:, np.newaxis, :]            # [n_sl, n_sl, 3]
+        - sl_positions[np.newaxis, :, :]).astype(float)
+
+    # phase[k, mu, nu] = 2π Σ_j K_scaled[k,j] * dr[mu,nu,j]
+    phase = 2 * np.pi * np.einsum("kj,mnj->kmn", K_scaled, dr)
+    return np.exp(1j * phase)                       # [n_k, n_sl, n_sl]
+
+
+def apply_phases(corr, corr_lookup, sl_positions, k_dims, n_ssf):
+    """Contract raw correlators with sublattice phase factors.
+
+    Returns dict label -> array of shape [n_T, k0, k1, k2], real-valued,
+    normalised by n_ssf.
     """
-    # Supercell reciprocal vectors: the SSF BZ is folded by index_cell
-    # grid vectors = recip @ inv(index_cell^T) -- but we just need 2D plot
-    # so use the first two primitive recip vectors scaled to the grid size
-    b0 = recip[0]  # first recip vector
-    b1 = recip[1]  # second recip vector
+    w = compute_phase_factors(k_dims, sl_positions)  # [n_k, n_sl, n_sl]
 
-    h = np.arange(N0)
-    k = np.arange(N1)
+    # contracted[c, t, k] = Re Σ_{mu,nu} w[k,mu,nu] * corr[c,t,k,mu,nu]
+    contracted = np.real(
+        np.einsum("kmn,ctkmn->ctk", w, corr)
+    )  # [n_corr, n_T, n_k]
+
+    contracted /= n_ssf[np.newaxis, :, np.newaxis]
+
+    k0, k1, k2 = k_dims
+    contracted = contracted.reshape(len(corr_lookup), -1, k0, k1, k2)
+    return {label: contracted[i] for i, label in enumerate(corr_lookup)}
+
+
+def kgrid_xy(k_dims, recip, slice_axis=2):
+    """Cartesian x,y coordinates for a 2D slice of the k-grid.
+
+    slice_axis: which of 0,1,2 to fix (default 2 → hk0 plane).
+    Returns x,y arrays of shape [na0, na1].
+    """
+    axes = [a for a in range(3) if a != slice_axis]
+    a0, a1 = axes
+    na0, na1 = k_dims[a0], k_dims[a1]
+
+    h = np.arange(na0) - na0 // 2
+    k = np.arange(na1) - na1 // 2
     hh, kk = np.meshgrid(h, k, indexing="ij")
 
-    pts = (hh[..., None] / N0) * b0 + (kk[..., None] / N1) * b1
-    x = pts[..., 0]
-    y = pts[..., 1]
-    return x, y
+    q = (hh[..., None] / na0 * recip[a0]
+       + kk[..., None] / na1 * recip[a1])  # [na0, na1, 3]
+    return q[..., 0], q[..., 1]
 
 
 def plot_ssf(args):
-    recip, index_cell, T_list, E, E2, n_E, SdotS, SzSz, n_ssf = load_file(args.file)
+    (recip, index_cell,
+     T_list, E, E2, n_E,
+     corr, corr_lookup, sl_positions, k_dims, n_spins, ssf_T, n_ssf) = load_file(args.file)
 
-    n_T, N0, N1 = SdotS.shape
-
-    # Normalise by number of samples
-    SdotS = SdotS / n_ssf
-    SzSz  = SzSz  / n_ssf
-
-    # Select temperature index
+    n_T = corr.shape[1]
     t_idx = args.t_index if args.t_index is not None else n_T - 1
     if not (0 <= t_idx < n_T):
         sys.exit(f"--t-index must be in [0, {n_T - 1}]")
+    t_val = ssf_T[t_idx]
 
-    # Find corresponding temperature from T_list (SSF saved at n_T checkpoints)
-    # We assume checkpoints are evenly spaced through the 100-step anneal
-    checkpoint_stride = len(T_list) // n_T
-    t_val = T_list[t_idx * checkpoint_stride]
+    S = apply_phases(corr, corr_lookup, sl_positions, k_dims, n_ssf)
 
-    x, y = kgrid_coords(N0, N1, recip, index_cell)
+    # Build derived observables from whatever components are present
+    diag = [c for c in ("xx", "yy", "zz") if c in S]
+    plots = []
+    if len(diag) == 3:
+        plots.append((sum(S[c] for c in diag), r"$S\cdot S$ (xx+yy+zz)"))
+    if "zz" in S:
+        plots.append((S["zz"], r"$S^{zz}$"))
+    if not plots:
+        first = corr_lookup[0]
+        plots.append((S[first], first))
 
-    norm = mcolors.LogNorm if args.log else mcolors.Normalize
-    cmap = args.cmap
+    sa = args.slice_axis
+    sl = args.slice_idx
+    x, y = kgrid_xy(k_dims, recip, slice_axis=sa)
 
-    fig, axes = plt.subplots(1, 2, figsize=(11, 5))
-    fig.suptitle(f"{args.file}  —  T = {t_val:.4g}  (index {t_idx})")
+    # Build index tuple for the 2D slice
+    idx = [slice(None), slice(None), slice(None)]
+    idx[sa] = sl
+    idx = tuple(idx)  # applied as data_3d[t_idx][idx]
 
-    for ax, data, label in zip(axes, [SdotS[t_idx], SzSz[t_idx]], [r"$S\cdot S$", r"$S^z S^z$"]):
-        vmin, vmax = data.min(), data.max()
-        if args.log:
-            vmin = max(vmin, 1e-6 * vmax)
-            c = ax.pcolormesh(x, y, data, cmap=cmap, norm=mcolors.LogNorm(vmin=vmin, vmax=vmax), shading="auto")
-        else:
-            c = ax.pcolormesh(x, y, data, cmap=cmap, norm=mcolors.Normalize(vmin=0, vmax=vmax), shading="auto")
+    fig, axes = plt.subplots(1, len(plots), figsize=(6 * len(plots), 5))
+    if len(plots) == 1:
+        axes = [axes]
+    fig.suptitle(f"{args.file}  —  T = {t_val:.4g}  (index {t_idx})"
+                 f"  slice axis={sa} idx={sl}")
+
+    for ax, (data_3d, label) in zip(axes, plots):
+        data = np.fft.fftshift(data_3d[t_idx][idx])
+        vmax = np.abs(data).max()
+        vmin = max(data.min(), 1e-6 * vmax) if args.log else 0
+        norm = (mcolors.LogNorm(vmin=vmin, vmax=vmax) if args.log
+                else mcolors.Normalize(vmin=0, vmax=vmax))
+        c = ax.pcolormesh(x, y, data, cmap=args.cmap, norm=norm, shading="auto")
         plt.colorbar(c, ax=ax, label=label)
         ax.set_title(label)
         ax.set_xlabel(r"$k_x$")
@@ -102,7 +159,6 @@ def plot_ssf(args):
 def plot_energy(args):
     _, _, T_list, E, E2, n_E, *_ = load_file(args.file)
 
-    # Specific heat: C = (⟨E²⟩ - ⟨E⟩²) / T²
     E_mean  = E / n_E
     E2_mean = E2 / n_E
     C = (E2_mean - E_mean**2) / T_list**2
@@ -120,7 +176,8 @@ def plot_energy(args):
     plt.tight_layout()
 
     if args.output:
-        out = args.output.replace(".png", "_energy.png") if args.output.endswith(".png") else args.output + "_energy.png"
+        out = (args.output.replace(".png", "_energy.png")
+               if args.output.endswith(".png") else args.output + "_energy.png")
         fig.savefig(out, dpi=150, bbox_inches="tight")
         print(f"Saved to {out}")
     else:
@@ -128,14 +185,21 @@ def plot_energy(args):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Plot SSF (and optionally energy) from anneal HDF5 output.")
+    p = argparse.ArgumentParser(
+        description="Plot SSF (and optionally energy) from anneal HDF5 output.")
     p.add_argument("file", help="Path to HDF5 file")
     p.add_argument("-t", "--t-index", type=int, default=None,
                    help="Temperature index into the SSF array (default: last = coldest)")
+    p.add_argument("--slice-axis", type=int, default=2, choices=[0, 1, 2],
+                   help="Which k-axis to fix for the 2D slice (default: 2 → hk0 plane)")
+    p.add_argument("--slice-idx", type=int, default=0,
+                   help="Index along --slice-axis to plot (default: 0)")
     p.add_argument("--log", action="store_true", help="Use logarithmic colour scale")
     p.add_argument("--cmap", default="inferno", help="Matplotlib colormap (default: inferno)")
-    p.add_argument("-o", "--output", default=None, help="Save figure to file instead of displaying")
-    p.add_argument("--energy", action="store_true", help="Also plot E and specific heat vs T")
+    p.add_argument("-o", "--output", default=None,
+                   help="Save figure to file instead of displaying")
+    p.add_argument("--energy", action="store_true",
+                   help="Also plot E and specific heat vs T")
     args = p.parse_args()
 
     plot_ssf(args)
