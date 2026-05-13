@@ -7,7 +7,6 @@
 
 
 #include "ssf_manager.hpp"
-#include "stats.hpp"
 #include "energy_manager.hpp"
 #include "pyrochlore_geometry.hpp"
 #include "format_bits.hpp"

@@ -53,7 +53,7 @@ g_deps = [
 
 
 mc_lib = static_library('cmc_lib',
-  files('src/MC.cpp', 'src/stats.cpp'),
+  files('src/MC.cpp'),
   dependencies: g_deps,
   include_directories: CMC_inc
   )
