@@ -93,7 +93,7 @@ namespace CMC {
 
     size_t MC_runner::local_Metropolis(double T, HeisenbergSpin* spin)
     {
-        auto h_loc = local_field(spin) + global_field;
+        auto h_loc = local_field(spin) - global_field;
         double curr_E = dot(spin->S, h_loc);
 
         if (rand01(rng) < 0.5){
@@ -128,7 +128,7 @@ namespace CMC {
         double E = 0;
         for (const auto& s : std::get<std::vector<HeisenbergSpin>>(lat.objects)){
             E += 0.5 * dot(s.S, local_field(&s));
-            E += dot(s.S, global_field);
+            E -= dot(s.S, global_field);
         }
         return E / lat.lattice.num_primitive_cells();
     }

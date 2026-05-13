@@ -1,9 +1,5 @@
 #include <algorithm>
-#include <argparse.hpp>
-#include <filesystem>
-#include <iostream>
-#include <ostream>
-
+#include "cli_bits.hpp"
 
 #include "MC.hpp"
 #include "ssf_manager.hpp"
@@ -33,15 +29,6 @@ b. Optionally, the final spin state (.spins.h5)
 using namespace std;
 using namespace CMC;
 
-using mat33d=vector3::mat33<double>;
-
-namespace coupling {
-static const mat33d Heis = mat33d::from_cols(
-        {1,0,0},{0,1,0},{0,0,1});
-
-static const mat33d Isin = mat33d::from_cols(
-        {0,0,0},{0,0,0},{0,0,1});
-};
 
 int main (int argc, char *argv[]) {
     ///////////////////////////////////////////////////////////////////////////
@@ -53,11 +40,9 @@ int main (int argc, char *argv[]) {
         .help("Path to output")
         .required();
 
-    std::string seed_s;
     prog.add_argument("--seed", "-s")
         .required()
-        .help("64-bit int to seed the RNG")
-        .store_into(seed_s);
+        .help("64-bit int to seed the RNG");
 
     prog.add_argument("--save_state")
         .implicit_value(true)
@@ -92,28 +77,7 @@ int main (int argc, char *argv[]) {
         .help("Number of sweeps to run at T_cold while collecting statistics")
         .scan<'i', size_t>();
 
-    /// PHYSICAL
-    prog.add_argument("L")
-        .help("Linear dimension of cubic supercell (e.g. L=2 has 2^3 *4 = 32 primitive cells)")
-        .scan<'i', int>(); // cubic unit cell hardcoded
-    prog.add_argument("--J1")
-        .help("Nearest-neighbour Heisenberg coupling strength")
-        .required()
-        .scan<'g', double>();
-    prog.add_argument("--J2")
-        .help("Second-nearest-neighbour Heisenberg coupling strength")
-        .default_value(0.)
-        .scan<'g', double>();
-    prog.add_argument("--J3")
-        .help("Third-nearest-neighbour Heisenberg coupling strength")
-        .default_value(0.)
-        .scan<'g', double>();
-    prog.add_argument("--external_field", "-B")
-        .help("Global magnetic field")
-        .nargs(3)
-        .default_value(std::vector<double>({0.,0.,0.}))
-        .scan<'g', double>();
-
+    declare_LJ123(prog);
 
     try {
         prog.parse_args(argc, argv);
@@ -127,7 +91,6 @@ int main (int argc, char *argv[]) {
     ///////////////////////////////////////////////////////////////////////////
     /// Input loading and validation
     
-    std::stringstream name; // accumulates hashed options
 
     /// Ensuring directories exist AHEAD of time (avoids heartbreak)
     std::string outdir_s = prog.get<std::string>("output_dir");
@@ -136,45 +99,11 @@ int main (int argc, char *argv[]) {
         throw runtime_error("Cannot open outdir");
     }
 
-
-    uint64_t seed; // ugly hack for loading seed as hex
-    std::stringstream ss;
-    ss << std::hex << seed_s;
-    ss >> seed; 
-
-
-    int L = prog.get<int>("L");
-    auto supercell_spec = imat33_t::from_cols({L,0,0},{0,L,0},{0,0,L});
-    auto cell_spec = PyroCubicCell();
-    CMC::Lattice lat = build_supercell(cell_spec, supercell_spec);
-
-    auto J1 = prog.get<double>("--J1");
-//    auto K1 = prog.get<double>("--K1");
-    auto J2 = prog.get<double>("--J2");
-    auto J3 = prog.get<double>("--J3");
-    vector3::vec3d global_field;
-    { 
-        auto B_tmp = prog.get<std::vector<double>>("-B");
-        for (int i=0; i<3; i++){ global_field[i]= B_tmp[i]; }
-        cout<<"B="<<global_field<<std::endl;
-    }
-
-
-    CMC::MC_runner mc(lat, seed);
-    mc.define_coupling("J1", pyrochlore::nn1_dist, 
-        mat33d::from_cols({J1, 0,0}, {0,J1, 0}, {0,0,J1})
-        );
-    mc.define_coupling("J2", pyrochlore::nn2_dist, J2*coupling::Heis);
-    mc.define_coupling("J3a", pyrochlore::nn3a_dist, J3*coupling::Heis);
-    mc.define_coupling("J3b", pyrochlore::nn3b_dist, J3*coupling::Heis);
-    mc.define_global_field(global_field);
-
-    mc.settings.T_ref = prog.get<double>("--T_ref");
-    mc.setup_lattice();
+    
+    std::string seed_s = prog.get<std::string>("--seed");
 
     const double T_hot = prog.is_used("--T_hot") ? 
-        prog.get<double>("--T_hot") :
-        sqrt(J1*J1 + J2* J2 + J3*J3)*10;
+        prog.get<double>("--T_hot") : 10;
     const double T_cold = prog.get<double>("--T_cold");
 
     const size_t n_steps = prog.get<size_t>("--n_steps");
@@ -184,15 +113,15 @@ int main (int argc, char *argv[]) {
 
     double T = T_hot;
 
-    // Parameter specification complete. Set the name...
+    auto lat = build_pyro_lat(prog);
+    auto mc = build_J1J2J3(prog, lat, int_from_hex_str(seed_s));
 
-    name <<"L="<<L<<DELIM<<
-        "J1="<<J1<<DELIM<<
-        "J2="<<J2<<DELIM<<
-        "J3="<<J3<<DELIM<<
+
+    // Parameter specification complete. Set the name...
+    std::stringstream name; // accumulates hashed options
+    name << name_LJ123(prog)<<
         "seed="<<seed_s<<DELIM<<
         "T_c="<<T_cold<<DELIM;
-
 
     printf("Burning in (%zu sweeps)...\n", n_burn_in);
     for (size_t i=0; i<n_burn_in; i++){
@@ -221,6 +150,13 @@ int main (int argc, char *argv[]) {
 
     ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1);
     ssfm.new_T(T);
+
+    printf("Releasing field and re-burning (%zu sweeps)...\n",n_burn_in);
+
+    mc.define_global_field({0,0,0});
+    for (size_t n=0; n<n_burn_in; n++){
+        mc.sweep_local_Metropolis(T);
+    }
 
     printf("Sampling at T=%lf (%zu sweeps)...\n", T, n_sample);
     for (size_t i=0; i<n_sample; i++){

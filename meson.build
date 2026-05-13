@@ -62,10 +62,17 @@ anneal_bin = executable('anneal',
   files('src/anneal.cpp'),
   dependencies: g_deps,
   link_with: mc_lib,
-  include_directories: CMC_inc,
-  install: true
+  include_directories: CMC_inc
   )
 
+eigen_dep = dependency('eigen3', required: true, include_type: 'system')
+
+ltgs_bin = executable('ltgs',
+  files('src/luttinger_tisza.cpp'),
+  dependencies: g_deps + [eigen_dep],
+  link_with: mc_lib,
+  include_directories: CMC_inc
+  )
 
 subdir('test')
 

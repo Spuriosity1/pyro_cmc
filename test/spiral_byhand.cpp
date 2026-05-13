@@ -91,13 +91,14 @@ int main (int argc, char *argv[]) {
     ivec3_t Q {Q_vec[0], Q_vec[1], Q_vec[2]};
 
     name << "L=" << L << DELIM
-         << "q=" << Q << DELIM;
+         << "Q=" << Q << DELIM;
 
     ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1);
     energy_manager e_manager;
 
 
     auto q = lat.lattice.wavevector_from_idx3(Q);
+    std::cout<<"q = "<<q<<std::endl;
 
     for (auto& s : lat.get_objects<HeisenbergSpin>() ){
         vector3::vec3d r = s.ipos;
