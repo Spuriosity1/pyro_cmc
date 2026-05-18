@@ -29,15 +29,15 @@ import h5py
 #   var       — cross-seed variance: e2_mean - e_mean²
 #
 # /geometry:
-#   n_spins   — 16 * L³ (no dilution)
-#   L         — linear system size
+#   index_cell
+#   recip_vectors
 #
 # Heat capacity per spin: C/N = var * N_prim / (T² * N_spins)
 #                              = var / (T² * 16)
 # is left to post-processing.
 
 
-def load_raw(fname):
+def load_energy_raw(fname):
     """Return T_list, E_sum, E2_sum, n_samples (raw sums from energy_manager)."""
     with h5py.File(fname, "r") as f:
         g = f["/energy"]
@@ -48,6 +48,36 @@ def load_raw(fname):
         n  = np.array(g["n_samples"])
     return T, E, E2, n
 
+def load_geometry(fname):
+    with h5py.File(fname, "r") as f:
+        g= f["/geometry"]
+        assert isinstance(g, h5py.Group)
+        idx_cell = np.array(g["index_cell"])
+        recip_vectors = np.array(g["recip_vectors"])
+
+    return idx_cell, recip_vectors
+
+
+"""
+expected layout:
+/ssf/T_list              Dataset {1}
+/ssf/corr_lookup         Dataset {3}
+/ssf/n_samples           Dataset {1}
+/ssf/sl_positions        Dataset {16, 3}
+/ssf/static_corr         Dataset {3, 1, 512, 16, 16, 2}
+"""
+def load_ssf_raw(fname):
+    with h5py.File(fname, "r") as f:
+        g= f["/ssf"]
+        assert isinstance(g, h5py.Group)
+        T  = np.array(g["T_list"])
+        corr_lookup = np.array(g["corr_lookup"])
+        n_samples = np.array(g["n_samples"])
+        sl_pos = np.array(g["sl_positions"])
+        static_corr  = np.array(g["static_corr"])
+        attrs = {k: v for k, v in g.attrs.items()}
+
+    return T, corr_lookup, n_samples, sl_pos, static_corr, attrs
 
 _COMPATIBLE_TAGS = {
     "L":   (r"L=(\d+)_",              int),
@@ -101,16 +131,15 @@ def main(fnames):
 
     check_compatibility(fnames)
     tags = parse_tags(fnames[0])
-    L = tags["L"]
-    N_spins = 16 * L**3   # pyrochlore: 16 spins per cubic unit cell, no dilution
 
     T_ref    = None
     E_total  = None
     E2_total = None
     n_total  = None
 
+    # accumulate the energies
     for fname in fnames:
-        T, E, E2, n = load_raw(fname)
+        T, E, E2, n = load_energy_raw(fname)
         if T_ref is None:
             T_ref    = T
             E_total  = E.copy()
@@ -123,10 +152,53 @@ def main(fnames):
             E2_total += E2
             n_total  += n
 
+    # accumulate the ssf's
+    T_ref_ssf = None
+    corr_lookup_ref=None
+    sl_positions_ref=None
+    ssf_attrs_ref = None
+
+    total_static_corr = None
+    total_static_samp = None
+
+    for fname in fnames:
+        T, corr_lookup, n_samp, sl_pos, static_corr, attrs = load_ssf_raw(fname)
+        if T_ref_ssf is None:
+            T_ref_ssf = T
+            corr_lookup_ref = corr_lookup
+            sl_positions_ref = sl_pos
+            ssf_attrs_ref = attrs
+
+            total_static_corr = static_corr
+            total_static_samp = n_samp
+        else:
+            if not np.allclose(T_ref_ssf, T):
+                raise RuntimeError(f"Temperature range of file {fname} incompatible")
+            if np.any(corr_lookup_ref != corr_lookup):
+                raise RuntimeError(f"Stored correlators of file {fname} incompatible")
+            if not np.allclose(sl_positions_ref, sl_pos):
+                raise RuntimeError(f"Sublattice convention incompatible in file {fname}")
+            attr_mismatches = [
+                f"{k}: {ssf_attrs_ref[k]!r} vs {attrs[k]!r}"
+                for k in ssf_attrs_ref
+                if k not in attrs or not np.array_equal(ssf_attrs_ref[k], attrs[k])
+            ] + [f"{k}: missing in reference" for k in attrs if k not in ssf_attrs_ref]
+            if attr_mismatches:
+                raise RuntimeError(
+                    f"SSF group attribute mismatch in {fname}: "
+                    + ", ".join(attr_mismatches)
+                )
+
+            total_static_corr += static_corr
+            total_static_samp += n_samp
+            
+
     K = len(fnames)
     e_mean  = E_total  / n_total
     e2_mean = E2_total / n_total
     var     = e2_mean - e_mean**2
+
+    idx, rcv = load_geometry(fnames[0])
 
     out = merged_name(fnames[0], K)
     with h5py.File(out, "w") as f:
@@ -139,9 +211,20 @@ def main(fnames):
         g.create_dataset("e2_mean",   data=e2_mean)
         g.create_dataset("var",       data=var)
         g.create_dataset("n_seeds",   data=np.uint64(K))
+
         gg = f.create_group("geometry")
-        gg.create_dataset("n_spins",  data=np.int64(N_spins))
-        gg.create_dataset("L",        data=np.int64(L))
+        gg.create_dataset("index_cell",  data=idx)
+        gg.create_dataset("recip_vectors", data=rcv)
+
+        sg = f.create_group("ssf")
+        sg.create_dataset("T_list",       data=T_ref_ssf)
+        sg.create_dataset("corr_lookup",  data=corr_lookup_ref)
+        sg.create_dataset("n_samples",    data=total_static_samp)
+        sg.create_dataset("static_corr",  data=total_static_corr)
+        sg.create_dataset("sl_positions", data=sl_positions_ref)
+        for k, v in ssf_attrs_ref.items():
+            sg.attrs[k] = v
+
     print(f"{K} seed(s) merged → {out}")
 
 
