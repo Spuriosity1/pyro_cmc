@@ -55,13 +55,9 @@ inline auto declare_LJ123(argparse::ArgumentParser& prog){
 // Compute J3 from J2 and Qz that minimises the spiral energy (assumes |J1|=1).
 // Qz is in units of 2pi/a_cubic.
 inline double J3_from_Qz(double J2, double Qz) {
-    Qz *= 2 * M_PI;
-    double s1 = std::sin(Qz);
-    double s3 = std::sin(3.*Qz);
-    double s5 = std::sin(5.*Qz);
-    double num = -2.*(-1. + J2)*s1 + (3. - 9.*J2)*s3 - 5.*J2*s5;
-    double den = 2.*(s1 + 3.*s3 + 5.*s5);
-    return num / den;
+    Qz *= 2 * M_PI / 8; // this 8 is from the conventional pyrochlore cell size
+
+    return (-4*J2 + 1./std::cos(2*Qz) - 2.*J2/std::cos(2*Qz))/8.;
 }
 
 // Round Qz (in units of 1/a_cubic) to the nearest value commensurate with an

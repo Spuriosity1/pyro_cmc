@@ -24,7 +24,7 @@ using namespace std;
 // energy per spin is (1/2)·λ_min.
 struct LTBond {
     int    alpha, beta; // source / target sublattice (0..n_sl-1)
-    ipos_t I_cell;      // cell-translation index of the target
+    ipos_t disp;        // full integer displacement from alpha to beta (= sl_pos[beta] + t_cell - sl_pos[alpha])
     double j;           // scalar exchange
 };
 
@@ -50,13 +50,13 @@ static vector<LTBond> build_bonds(
             const int pyro_sl = sl % 4;
             for (const auto& v : (*dist)[pyro_sl]) {
                 ipos_t ref = sl_pos[sl] + v; // copy; get_supercell_IDX mutates in place
-                const idx3_t I = lat.get_supercell_IDX(ref); // ref → ref-cell pos
+                lat.get_supercell_IDX(ref);  // wrap ref to primitive cell (discard returned I)
                 int beta = -1;
                 for (int s = 0; s < n_sl; s++) {
                     if (sl_pos[s] == ref) { beta = s; break; }
                 }
                 assert(beta >= 0 && "bond target not found in sl_positions");
-                bonds.push_back({sl, beta, I, j});
+                bonds.push_back({sl, beta, v, j});
             }
         }
     }
@@ -69,8 +69,7 @@ int main(int argc, char* argv[])
     argparse::ArgumentParser prog("ltgs");
 
     prog.add_argument("--output_dir", "-o")
-        .help("Path to output directory")
-        .required();
+        .help("Path to output directory");
 
     declare_LJ123(prog);
 
@@ -81,14 +80,18 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    const string outdir_s = prog.get<string>("output_dir");
-    filesystem::path outdir(outdir_s);
-    if (!filesystem::exists(outdir))
-        throw runtime_error("output_dir does not exist: " + outdir_s);
+    
+    filesystem::path outdir;
+    if (prog.is_used("--output_dir")){
+        const string outdir_s = prog.get<string>("output_dir");
+        outdir = outdir_s;
+        if (!filesystem::exists(outdir))
+            throw runtime_error("output_dir does not exist: " + outdir_s);
+    }
 
     const double J1 = prog.get<double>("--J1");
     const double J2 = prog.get<double>("--J2");
-    const double J3 = prog.get<double>("--J3");
+    const double J3 = resolve_J3(prog);
 
     // Build LatticeIndexing directly — no Supercell<HeisenbergSpin> needed.
     const int L = prog.get<int>("L");
@@ -129,11 +132,10 @@ int main(int argc, char* argv[])
 
         MatC M = MatC::Zero(n_sl, n_sl);
         for (const auto& b : bonds) {
-            const ipos_t t = lat.translation_of(b.I_cell);
             const double phase =
-                k_vec[0] * (double)t[0] +
-                k_vec[1] * (double)t[1] +
-                k_vec[2] * (double)t[2];
+                k_vec[0] * (double)b.disp[0] +
+                k_vec[1] * (double)b.disp[1] +
+                k_vec[2] * (double)b.disp[2];
             M(b.alpha, b.beta) += b.j * complex<double>(cos(phase), sin(phase));
         }
         // M is Hermitian by construction (full directed-bond sweep)
@@ -155,6 +157,11 @@ int main(int argc, char* argv[])
     const auto k_star_vec = lat.wavevector_from_idx3(k_star_idx);
 
     printf("LT minimum: λ_min = %.6f  E/spin = %.6f\n", E_min, E_per_spin);
+    printf("Eigvec sublattice |s_α|² :");
+    for (int s=0; s<n_sl; s++)
+        printf(" %.4f", norm(eigvec_star(s)));
+    printf("\n");
+
     printf("k*  idx = [%lld, %lld, %lld]\n",
            (long long)k_star_idx[0],
            (long long)k_star_idx[1],
@@ -162,9 +169,14 @@ int main(int argc, char* argv[])
     printf("k*  vec = [%.4f, %.4f, %.4f]  (rad / coord-unit)\n",
            k_star_vec[0], k_star_vec[1], k_star_vec[2]);
 
+
     // -----------------------------------------------------------------------
     // HDF5 output
     // -----------------------------------------------------------------------
+    
+    // exit if no output file provided
+    if (! prog.is_used("--output_dir")) return 0;
+
     stringstream name;
     name << name_LJ123(prog);
     auto file_path = outdir / (name.str() + "ltgs.out.h5");
