@@ -48,6 +48,11 @@ int main (int argc, char *argv[]) {
         .implicit_value(true)
         .default_value(false);
 
+    prog.add_argument("--init_spiral")
+        .help("Pre-initialise spins to a spiral with the wavevector given by --Qz (requires --Qz)")
+        .implicit_value(true)
+        .default_value(false);
+
     /// ANNEALING PROTOCOL
     prog.add_argument("--T_hot")
         .help("Temperature  to begin annealing from")
@@ -116,6 +121,13 @@ int main (int argc, char *argv[]) {
     auto lat = build_pyro_lat(prog);
     auto mc = build_J1J2J3(prog, lat, int_from_hex_str(seed_s));
 
+    if (prog.get<bool>("--init_spiral")) {
+        if (!prog.is_used("--Qz"))
+            throw runtime_error("--init_spiral requires --Qz");
+        double Qz_rounded = round_Qz_to_supercell(prog.get<double>("--Qz"), prog.get<int>("L"));
+        printf("Pre-initialising to spiral order (Qz=%.10g)...\n", Qz_rounded);
+        init_spiral_state(lat, Qz_rounded);
+    }
 
     // Parameter specification complete. Set the name...
     std::stringstream name; // accumulates hashed options
@@ -153,7 +165,8 @@ int main (int argc, char *argv[]) {
 
     printf("Releasing field and re-burning (%zu sweeps)...\n",n_burn_in);
 
-    mc.define_global_field({0,0,0});
+
+    mc.set_global_field({0,0,0});
     for (size_t n=0; n<n_burn_in; n++){
         mc.sweep_local_Metropolis(T);
     }

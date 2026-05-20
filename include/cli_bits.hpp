@@ -2,6 +2,7 @@
 #include "format_bits.hpp"
 #include "vec3.hpp"
 #include <argparse.hpp>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <ostream>
@@ -37,14 +38,63 @@ inline auto declare_LJ123(argparse::ArgumentParser& prog){
         .default_value(0.)
         .scan<'g', double>();
     prog.add_argument("--J3")
-        .help("Third-nearest-neighbour Heisenberg coupling strength")
+        .help("Third-nearest-neighbour Heisenberg coupling strength (mutually exclusive with --Qz)")
         .default_value(0.)
+        .scan<'g', double>();
+    prog.add_argument("--Qz")
+        .help("Spiral wavevector z-component in units of 2pi/a_cubic; J3 is set to minimise spiral energy "
+              "(mutually exclusive with --J3). Rounded to nearest supercell-commensurate value.")
         .scan<'g', double>();
     prog.add_argument("--external_field", "-B")
         .help("Global magnetic field")
         .nargs(3)
         .default_value(std::vector<double>({0.,0.,0.}))
         .scan<'g', double>();
+}
+
+// Compute J3 from J2 and Qz that minimises the spiral energy (assumes |J1|=1).
+// Qz is in units of 2pi/a_cubic.
+inline double J3_from_Qz(double J2, double Qz) {
+    Qz *= 2 * M_PI;
+    double s1 = std::sin(Qz);
+    double s3 = std::sin(3.*Qz);
+    double s5 = std::sin(5.*Qz);
+    double num = -2.*(-1. + J2)*s1 + (3. - 9.*J2)*s3 - 5.*J2*s5;
+    double den = 2.*(s1 + 3.*s3 + 5.*s5);
+    return num / den;
+}
+
+// Round Qz (in units of 1/a_cubic) to the nearest value commensurate with an
+// L-cell supercell (i.e. to a multiple of 2pi/L).
+inline double round_Qz_to_supercell(double Qz, int L) {
+    const double step = 1. / L;
+    return std::round(Qz / step) * step;
+}
+
+// Warn if the rounding of Qz to the supercell grid exceeds min(1e-10, 1e-3*|Qz|).
+inline void warn_Qz_rounding(double Qz, double Qz_rounded) {
+    double diff = std::abs(Qz - Qz_rounded);
+    double tol  = std::min(1e-10, 1e-3 * std::abs(Qz));
+    if (diff > tol) {
+        fprintf(stderr,
+            "WARNING: Qz=%.10g rounded to %.10g (diff=%.3e > tol=%.3e)\n",
+            Qz, Qz_rounded, diff, tol);
+    }
+}
+
+// Extract the effective J3 from the parsed arguments, handling --Qz or --J3.
+inline double resolve_J3(const argparse::ArgumentParser& prog) {
+    bool has_J3 = prog.is_used("--J3");
+    bool has_Qz = prog.is_used("--Qz");
+    if (has_J3 && has_Qz)
+        throw std::runtime_error("--J3 and --Qz are mutually exclusive");
+    if (has_Qz) {
+        int    L  = prog.get<int>("L");
+        double Qz = round_Qz_to_supercell(prog.get<double>("--Qz"), L);
+        double J2 = prog.get<double>("--J2");
+        return J3_from_Qz(J2, Qz);
+    }
+    return prog.get<double>("--J3");
 }
 
 
@@ -66,21 +116,28 @@ inline auto build_pyro_lat(const argparse::ArgumentParser& prog){
 inline auto build_J1J2J3(const argparse::ArgumentParser& prog, CMC::Lattice& lat, uint64_t seed){
 
     vector3::vec3d global_field;
-    { 
+    {
         auto B_tmp = prog.get<std::vector<double>>("-B");
         for (int i=0; i<3; i++){ global_field[i]= B_tmp[i]; }
     }
 
     auto J1 = prog.get<double>("--J1");
     auto J2 = prog.get<double>("--J2");
-    auto J3 = prog.get<double>("--J3");
+    auto J3 = resolve_J3(prog);
+    if (prog.is_used("--Qz")) {
+        int    L          = prog.get<int>("L");
+        double Qz         = prog.get<double>("--Qz");
+        double Qz_rounded = round_Qz_to_supercell(Qz, L);
+        warn_Qz_rounding(Qz, Qz_rounded);
+        printf("Using Qz=%.10g -> J3=%.10g\n", Qz_rounded, J3);
+    }
 
     CMC::MC_runner mc(lat, seed);
     mc.define_coupling("J1", pyrochlore::nn1_dist, J1*coupling::Heis);
     mc.define_coupling("J2", pyrochlore::nn2_dist, J2*coupling::Heis);
     mc.define_coupling("J3a", pyrochlore::nn3a_dist, J3*coupling::Heis);
     mc.define_coupling("J3b", pyrochlore::nn3b_dist, J3*coupling::Heis);
-    mc.define_global_field(global_field);
+    mc.set_global_field(global_field);
 
     mc.settings.T_ref = prog.get<double>("--T_ref");
     mc.setup_lattice();
@@ -88,17 +145,31 @@ inline auto build_J1J2J3(const argparse::ArgumentParser& prog, CMC::Lattice& lat
     return mc;
 }
 
+// Initialise all spins to a spiral with wavevector Q = (0,0,Qz) (Qz in units of
+// 2pi/a_cubic). Spins rotate in the yz-plane: S = (0, cos(phi), sin(phi)).
+inline void init_spiral_state(CMC::Lattice& lat, double Qz_rounded) {
+    constexpr double a_cubic = 8.;
+    for (auto& s : lat.get_objects<CMC::HeisenbergSpin>()) {
+        double phase = Qz_rounded * 2 * M_PI * static_cast<double>(s.ipos[2]) / a_cubic;
+        s.S = {0., std::cos(phase), std::sin(phase)};
+    }
+}
+
 inline auto name_LJ123(const argparse::ArgumentParser& prog){
     auto J1 = prog.get<double>("--J1");
     auto J2 = prog.get<double>("--J2");
-    auto J3 = prog.get<double>("--J3");
+    auto J3 = resolve_J3(prog);
     int L = prog.get<int>("L");
 
-    std::stringstream name; // accumulates hashed options
-    name <<"L="<<L<<DELIM<<
+    std::stringstream name;
+    name << "L="<<L<<DELIM<<
         "J1="<<J1<<DELIM<<
         "J2="<<J2<<DELIM<<
         "J3="<<J3<<DELIM;
+    if (prog.is_used("--Qz")) {
+        double Qz_rounded = round_Qz_to_supercell(prog.get<double>("--Qz"), L);
+        name << "Qz="<<Qz_rounded<<DELIM;
+    }
     return name.str();
 }
 

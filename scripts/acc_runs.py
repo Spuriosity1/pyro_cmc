@@ -159,6 +159,7 @@ def main(fnames):
     ssf_attrs_ref = None
 
     total_static_corr = None
+    total_static_corr_2 = None
     total_static_samp = None
 
     for fname in fnames:
@@ -170,6 +171,7 @@ def main(fnames):
             ssf_attrs_ref = attrs
 
             total_static_corr = static_corr
+            total_static_corr_2 = static_corr **2
             total_static_samp = n_samp
         else:
             if not np.allclose(T_ref_ssf, T):
@@ -190,6 +192,7 @@ def main(fnames):
                 )
 
             total_static_corr += static_corr
+            total_static_corr_2 += static_corr**2
             total_static_samp += n_samp
             
 
@@ -221,6 +224,7 @@ def main(fnames):
         sg.create_dataset("corr_lookup",  data=corr_lookup_ref)
         sg.create_dataset("n_samples",    data=total_static_samp)
         sg.create_dataset("static_corr",  data=total_static_corr)
+        sg.create_dataset("static_corr_2",  data=total_static_corr_2)
         sg.create_dataset("sl_positions", data=sl_positions_ref)
         for k, v in ssf_attrs_ref.items():
             sg.attrs[k] = v

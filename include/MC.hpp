@@ -104,7 +104,8 @@ public:
             const std::vector<std::vector<ipos_t>>& rel_vecs,
             const vector3::mat33<double>& J);
 
-    void define_global_field(const vector3::vec3<double>& h);
+    void set_global_field(const vector3::vec3<double>& h);
+    vector3::vec3d get_global_field() const;
 
     void setup_lattice();
 

@@ -113,8 +113,8 @@ def plot_ssf(args):
     plots = []
     if len(diag) == 3:
         plots.append((sum(S[c] for c in diag), r"$S\cdot S$ (xx+yy+zz)"))
-    if "zz" in S:
-        plots.append((S["zz"], r"$S^{zz}$"))
+#    if "zz" in S:
+#        plots.append((S["zz"], r"$S^{zz}$"))
     if not plots:
         first = corr_lookup[0]
         plots.append((S[first], first))

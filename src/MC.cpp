@@ -56,8 +56,12 @@ namespace CMC {
     }
 
 
-    void MC_runner::define_global_field(const vector3::vec3<double>& h){
+    void MC_runner::set_global_field(const vector3::vec3<double>& h){
         global_field = h;
+    }
+
+    vector3::vec3d MC_runner::get_global_field() const {
+        return global_field;
     }
 
 
