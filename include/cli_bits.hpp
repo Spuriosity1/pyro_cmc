@@ -109,7 +109,7 @@ inline auto build_pyro_lat(const argparse::ArgumentParser& prog){
     return build_supercell(cell_spec, supercell_spec);
 }
 
-inline auto build_J1J2J3(const argparse::ArgumentParser& prog, CMC::Lattice& lat, uint64_t seed){
+inline auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& lat, uint64_t seed){
 
     vector3::vec3d global_field;
     {

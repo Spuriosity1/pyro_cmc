@@ -119,7 +119,7 @@ int main (int argc, char *argv[]) {
     double T = T_hot;
 
     auto lat = build_pyro_lat(prog);
-    auto mc = build_J1J2J3(prog, lat, int_from_hex_str(seed_s));
+    auto mc = build_J1J2J3_h(prog, lat, int_from_hex_str(seed_s));
 
     if (prog.get<bool>("--init_spiral")) {
         if (!prog.is_used("--Qz"))
@@ -129,11 +129,14 @@ int main (int argc, char *argv[]) {
         init_spiral_state(lat, Qz_rounded);
     }
 
+    auto B = prog.get<std::vector<double>>("-B");
     // Parameter specification complete. Set the name...
     std::stringstream name; // accumulates hashed options
-    name << name_LJ123(prog)<<
+    name << "pyro"<<DELIM<<name_LJ123(prog)<<
+        "B="<<B[0]<<","<<B[1]<<","<<B[2]<<DELIM<<
         "seed="<<seed_s<<DELIM<<
         "T_c="<<T_cold<<DELIM;
+
 
     printf("Burning in (%zu sweeps)...\n", n_burn_in);
     for (size_t i=0; i<n_burn_in; i++){
