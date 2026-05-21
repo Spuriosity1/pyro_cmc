@@ -81,6 +81,8 @@ int main (int argc, char *argv[]) {
         .default_value(static_cast<size_t>(64))
         .help("Number of sweeps to run at T_cold while collecting statistics")
         .scan<'i', size_t>();
+    prog.add_argument("--prefix")
+        .default_value("run");
 
     declare_LJ123(prog);
 
@@ -132,7 +134,7 @@ int main (int argc, char *argv[]) {
     auto B = prog.get<std::vector<double>>("-B");
     // Parameter specification complete. Set the name...
     std::stringstream name; // accumulates hashed options
-    name << "pyro"<<DELIM<<name_LJ123(prog)<<
+    name << prog.get<std::string>("--prefix")<<DELIM<<name_LJ123(prog)<<
         "B="<<B[0]<<","<<B[1]<<","<<B[2]<<DELIM<<
         "seed="<<seed_s<<DELIM<<
         "T_c="<<T_cold<<DELIM;
