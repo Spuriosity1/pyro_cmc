@@ -132,6 +132,9 @@ int main (int argc, char *argv[]) {
     }
 
     auto B = prog.get<std::vector<double>>("-B");
+    if (B.size() < 3){
+        throw std::runtime_error("--B requires 3 arguments");
+    }
     // Parameter specification complete. Set the name...
     std::stringstream name; // accumulates hashed options
     name << prog.get<std::string>("--prefix")<<DELIM<<name_LJ123(prog)<<
