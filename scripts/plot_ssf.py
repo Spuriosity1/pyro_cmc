@@ -2,6 +2,7 @@
 """Plot static structure factor from anneal HDF5 output."""
 
 import argparse
+import os
 import sys
 import numpy as np
 import h5py
@@ -75,6 +76,40 @@ def apply_phases(corr, corr_lookup, sl_positions, k_dims, n_ssf):
     contracted = contracted.reshape(len(corr_lookup), -1, k0, k1, k2)
     return {label: contracted[i] for i, label in enumerate(corr_lookup)}
 
+def parse_params(path):
+    """Extract key=value tokens from a filename stem into an ordered dict."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    params = {}
+    for token in stem.split("_"):
+        if "=" in token:
+            k, v = token.split("=", 1)
+            params[k] = v
+    return params
+
+
+def split_fixed_varying(files):
+    """Return (fixed, varying_keys) across all filenames.
+
+    fixed: dict of params whose value is identical in every file.
+    varying_keys: list of params that differ across files (in order of first appearance).
+    """
+    all_params = [parse_params(f) for f in files]
+    all_keys = dict.fromkeys(k for p in all_params for k in p)
+    fixed = {
+        k: all_params[0][k]
+        for k in all_keys
+        if all(p.get(k) == all_params[0].get(k) for p in all_params)
+    }
+    varying_keys = [k for k in all_keys if k not in fixed]
+    return fixed, varying_keys, all_params
+
+
+def label_axes(ax, slice_axis=2):
+    axes_l = ['yz', 'xz', 'xy']
+    a1, a2 = tuple(axes_l[slice_axis])
+
+    ax.set_xlabel(rf"$k_{a1}$")
+    ax.set_ylabel(rf"$k_{a2}$")
 
 def kgrid_xy(k_dims, recip, slice_axis=2):
     """Cartesian x,y coordinates for a 2D slice of the k-grid.
@@ -92,13 +127,14 @@ def kgrid_xy(k_dims, recip, slice_axis=2):
 
     q = (hh[..., None] / na0 * recip[a0]
        + kk[..., None] / na1 * recip[a1])  # [na0, na1, 3]
-    return q[..., 0], q[..., 1]
+    return q[..., a0], q[..., a1]
 
 
-def plot_ssf(args):
+def plot_ssf(ax, file, args, title=""):
     (recip, index_cell,
      T_list, E, E2, n_E,
-     corr, corr_lookup, sl_positions, k_dims, n_spins, ssf_T, n_ssf) = load_file(args.file)
+     corr, corr_lookup, sl_positions,
+     k_dims, n_spins, ssf_T, n_ssf) = load_file(file)
 
     n_T = corr.shape[1]
     t_idx = args.t_index if args.t_index is not None else n_T - 1
@@ -110,14 +146,7 @@ def plot_ssf(args):
 
     # Build derived observables from whatever components are present
     diag = [c for c in ("xx", "yy", "zz") if c in S]
-    plots = []
-    if len(diag) == 3:
-        plots.append((sum(S[c] for c in diag), r"$S\cdot S$ (xx+yy+zz)"))
-#    if "zz" in S:
-#        plots.append((S["zz"], r"$S^{zz}$"))
-    if not plots:
-        first = corr_lookup[0]
-        plots.append((S[first], first))
+    data_3d = sum(S[c] for c in diag)
 
     sa = args.slice_axis
     sl = args.slice_idx
@@ -128,32 +157,22 @@ def plot_ssf(args):
     idx[sa] = sl
     idx = tuple(idx)  # applied as data_3d[t_idx][idx]
 
-    fig, axes = plt.subplots(1, len(plots), figsize=(6 * len(plots), 5))
-    if len(plots) == 1:
-        axes = [axes]
-    fig.suptitle(f"{args.file}  —  T = {t_val:.4g}  (index {t_idx})"
-                 f"  slice axis={sa} idx={sl}")
+    ax.set_title(title)
 
-    for ax, (data_3d, label) in zip(axes, plots):
-        data = np.fft.fftshift(data_3d[t_idx][idx])
-        vmax = np.abs(data).max()
-        vmin = max(data.min(), 1e-6 * vmax) if args.log else 0
-        norm = (mcolors.LogNorm(vmin=vmin, vmax=vmax) if args.log
-                else mcolors.Normalize(vmin=0, vmax=vmax))
-        c = ax.pcolormesh(x, y, data, cmap=args.cmap, norm=norm, shading="auto")
-        plt.colorbar(c, ax=ax, label=label)
-        ax.set_title(label)
-        ax.set_xlabel(r"$k_x$")
-        ax.set_ylabel(r"$k_y$")
-        ax.set_aspect("equal")
-
-    plt.tight_layout()
-
-    if args.output:
-        fig.savefig(args.output, dpi=150, bbox_inches="tight")
-        print(f"Saved to {args.output}")
+    data = np.fft.fftshift(data_3d[t_idx][idx])
+    vmax = 10**args.vmax
+    if args.vmin:
+        vmin = 10**args.vmin
     else:
-        plt.show()
+        vmin = max(data.min(), 1e-6 * vmax) if args.log else 0
+    norm = (mcolors.LogNorm(vmin=vmin, vmax=vmax) if args.log
+            else mcolors.Normalize(vmin=0, vmax=vmax))
+    c = ax.pcolormesh(x, y, data, cmap=args.cmap, norm=norm, shading="auto")
+
+    label_axes(ax, slice_axis=sa)
+    ax.set_aspect("equal")
+    return c
+
 
 
 def plot_energy(args):
@@ -187,7 +206,7 @@ def plot_energy(args):
 def main():
     p = argparse.ArgumentParser(
         description="Plot SSF (and optionally energy) from anneal HDF5 output.")
-    p.add_argument("file", help="Path to HDF5 file")
+    p.add_argument("file", help="Path(s) to HDF5 file", nargs='+')
     p.add_argument("-t", "--t-index", type=int, default=None,
                    help="Temperature index into the SSF array (default: last = coldest)")
     p.add_argument("--slice-axis", type=int, default=2, choices=[0, 1, 2],
@@ -196,16 +215,46 @@ def main():
                    help="Index along --slice-axis to plot (default: 0)")
     p.add_argument("--log", action="store_true", help="Use logarithmic colour scale")
     p.add_argument("--cmap", default="inferno", help="Matplotlib colormap (default: inferno)")
+
+    p.add_argument("--vmin", type=float)
+    p.add_argument("--vmax", default=4, type=float)
+
     p.add_argument("-o", "--output", default=None,
                    help="Save figure to file instead of displaying")
-    p.add_argument("--energy", action="store_true",
-                   help="Also plot E and specific heat vs T")
     args = p.parse_args()
+    
+    files = args.file
+    n_panels = len(files)
 
-    plot_ssf(args)
-    if args.energy:
-        plot_energy(args)
+    fixed, varying_keys, all_params = split_fixed_varying(files)
+    panel_titles = [
+        "  ".join(f"{k}={p.get(k, '?')}" for k in varying_keys) or os.path.basename(f)
+        for f, p in zip(files, all_params)
+    ]
+    fixed_str = "  ".join(f"{k}={v}" for k, v in fixed.items())
+    suptitle = r"$S\cdot S$ (xx+yy+zz)"
+    if fixed_str:
+        suptitle += f"\n{fixed_str}"
 
+    fig, axes = plt.subplots(1, n_panels, figsize=(2 * n_panels, 3))
+
+    if n_panels == 1:
+        axes = [axes]
+
+    fig.suptitle(suptitle)
+
+    c = [plot_ssf(ax, f, args, title=t) for ax, f, t in zip(axes, files, panel_titles)]
+    cax = fig.add_axes([0.05,0.9,0.3,0.02])
+    plt.colorbar(c[0], cax=cax, orientation='horizontal')
+        
+
+    plt.tight_layout()
+
+    if args.output:
+        fig.savefig(args.output, dpi=150, bbox_inches="tight")
+        print(f"Saved to {args.output}")
+    else:
+        plt.show()
 
 if __name__ == "__main__":
     main()
