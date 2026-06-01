@@ -167,7 +167,14 @@ def plot_ssf(ax, file, args, title=""):
         vmin = max(data.min(), 1e-6 * vmax) if args.log else 0
     norm = (mcolors.LogNorm(vmin=vmin, vmax=vmax) if args.log
             else mcolors.Normalize(vmin=0, vmax=vmax))
-    c = ax.pcolormesh(x, y, data, cmap=args.cmap, norm=norm, shading="auto")
+    a0, a1 = [a for a in range(3) if a != sa]
+    # For FCC: tile with the 4 nearest in-plane BCC shifts (±1,±1) so the
+    # full FCC reciprocal lattice is visible beyond one conventional cubic BZ.
+    shifts = ((0,0), (1,1), (1,-1), (-1,1), (-1,-1)) if args.fcc else ((0,0),)
+    for p, q in shifts:
+        xs = x + p * recip[a0][a0] + q * recip[a1][a0]
+        ys = y + p * recip[a0][a1] + q * recip[a1][a1]
+        c = ax.pcolormesh(xs, ys, data, cmap=args.cmap, norm=norm, shading="auto")
 
     label_axes(ax, slice_axis=sa)
     ax.set_aspect("equal")
@@ -216,6 +223,8 @@ def main():
     p.add_argument("--log", action="store_true", help="Use logarithmic colour scale")
     p.add_argument("--cmap", default="inferno", help="Matplotlib colormap (default: inferno)")
 
+    p.add_argument("--fcc", action="store_true",
+                   help="Tile with BCC-type shifts to show full FCC reciprocal lattice")
     p.add_argument("--vmin", type=float)
     p.add_argument("--vmax", default=4, type=float)
 
