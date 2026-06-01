@@ -93,7 +93,7 @@ public:
 
     MC_runner(Lattice &lat_, size_t seed)
         : lat(lat_),
-          site_dist(0, lat.get_objects<HeisenbergSpin>().size()),
+          site_dist(0, lat.get_objects<HeisenbergSpin>().size()-1),
           rand01(0,1),
           rng(seed)
     {}
@@ -111,6 +111,7 @@ public:
 
     size_t local_Metropolis(double T, HeisenbergSpin* spin);
 
+    void overrelax_all(double p);
     size_t sweep_local_Metropolis(double T);
 };
 

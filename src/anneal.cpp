@@ -181,9 +181,12 @@ int main (int argc, char *argv[]) {
 
     printf("Sampling at T=%lf (%zu sweeps)...\n", T, n_sample);
     for (size_t i=0; i<n_sample; i++){
+        size_t accepted=0;
         for (size_t n=0; n<n_sweep; n++){
-            mc.sweep_local_Metropolis(T);
+            accepted += mc.sweep_local_Metropolis(T);
         }
+        printf("[cold] Iter %4zu T=%.3e E=%3e Acceptance rate: %.2f%%\n", 
+                i, T, E, accepted*100.0/lat.get_objects<HeisenbergSpin>().size()/n_sweep);
         ssfm.sample();
     }
 

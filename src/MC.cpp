@@ -100,10 +100,6 @@ namespace CMC {
         auto h_loc = local_field(spin) - global_field;
         double curr_E = dot(spin->S, h_loc);
 
-        if (rand01(rng) < 0.5){
-            mirror_about_vector(spin->S, h_loc);
-        }
-
         auto new_S = sqrt(T/settings.T_ref) * vector3::vec3d(
                 normal_dist(rng), normal_dist(rng), normal_dist(rng));
         new_S += spin->S;
@@ -120,11 +116,23 @@ namespace CMC {
         return 0;
     }
 
+    // overrelaxes proportion p of the spins
+    void MC_runner::overrelax_all(double p){
+        auto& spins = lat.get_objects<HeisenbergSpin>();
+
+        for (int i=0; i<p*spins.size(); ++i) {
+            auto* spin = &spins[site_dist(rng)];
+            auto h_loc = local_field(spin) - global_field;
+            mirror_about_vector(spin->S, h_loc);
+        }
+    }
+
     size_t MC_runner::sweep_local_Metropolis(double T){
         size_t accepted = 0;
         for (auto& spin : lat.get_objects<HeisenbergSpin>()){
             accepted += local_Metropolis(T, &spin);
         }
+        overrelax_all(0.3);
         return accepted;
     }
 
