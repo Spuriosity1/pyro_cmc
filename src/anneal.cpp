@@ -140,7 +140,7 @@ int main (int argc, char *argv[]) {
     name << prog.get<std::string>("--prefix")<<DELIM<<name_LJ123(prog)<<
         "B="<<B[0]<<","<<B[1]<<","<<B[2]<<DELIM<<
         "seed="<<seed_s<<DELIM<<
-        "T_c="<<T_cold<<DELIM;
+        "Tc="<<T_cold<<DELIM;
 
 
     printf("Burning in (%zu sweeps)...\n", n_burn_in);
