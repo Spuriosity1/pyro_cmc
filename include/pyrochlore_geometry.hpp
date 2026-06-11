@@ -21,9 +21,10 @@ inline UnitCellSpecifier<CMC::HeisenbergSpin> PyroCubicCell() {
     };
 
     for (int fcc = 0; fcc < 4; fcc++) {
-        for (const auto& x : link_positions) {
+        for (int p = 0; p < 4; p++) {
             CMC::HeisenbergSpin spin;
-            spin.ipos = x + R_fcc[fcc];
+            spin.ipos = link_positions[p] + R_fcc[fcc];
+            spin.pyro_sl = p;
             spec.add(std::move(spin));
         }
     }
@@ -39,9 +40,10 @@ inline UnitCellSpecifier<CMC::HeisenbergSpin> PrimitiveCell() {
         {1,1,1}, {1,-1,-1}, {-1,1,-1}, {-1,-1,1}
     };
 
-    for (const auto& x : link_positions) {
+    for (int p = 0; p < 4; p++) {
         CMC::HeisenbergSpin spin;
-        spin.ipos = x;
+        spin.ipos = link_positions[p];
+        spin.pyro_sl = p;
         spec.add(std::move(spin));
     }
     return spec;
@@ -145,6 +147,47 @@ static const std::vector<std::vector<idx3_t>> nn3b_dist = {
     {{0, -4, 4}, {-4, 0, -4}, {4, 4, 0}, {0, 4, -4}, {4, 0, 4}, {-4, -4, 0}},
     {{4, 4, 0}, {-4, 0, 4}, {0, -4, -4}, {-4, -4, 0}, {4, 0, -4}, {0, 4, 4}},
     {{0, -4, -4}, {4, 0, 4}, {-4, 4, 0}, {0, 4, 4}, {-4, 0, -4}, {4, -4, 0}}
+};
+
+// nn1 bonds split by pyrochlore sublattice pair (μ,ν), μ < ν.
+// nn1_pair_MN[pyro_sl] lists displacement vectors from a spin of pyro_sl
+// to its nn1 neighbours of the opposite sublattice in the pair.
+// Only the two involved sublattices have non-empty entries.
+static const std::vector<std::vector<idx3_t>> nn1_pair_01 = {
+    {{ 0,-2,-2}, { 0, 2, 2}},  // pyro_sl=0 → pyro_sl=1
+    {{ 0, 2, 2}, { 0,-2,-2}},  // pyro_sl=1 → pyro_sl=0
+    {},
+    {}
+};
+static const std::vector<std::vector<idx3_t>> nn1_pair_02 = {
+    {{-2, 0,-2}, { 2, 0, 2}},  // pyro_sl=0 → pyro_sl=2
+    {},
+    {{ 2, 0, 2}, {-2, 0,-2}},  // pyro_sl=2 → pyro_sl=0
+    {}
+};
+static const std::vector<std::vector<idx3_t>> nn1_pair_03 = {
+    {{-2,-2, 0}, { 2, 2, 0}},  // pyro_sl=0 → pyro_sl=3
+    {},
+    {},
+    {{ 2, 2, 0}, {-2,-2, 0}}   // pyro_sl=3 → pyro_sl=0
+};
+static const std::vector<std::vector<idx3_t>> nn1_pair_12 = {
+    {},
+    {{-2, 2, 0}, { 2,-2, 0}},  // pyro_sl=1 → pyro_sl=2
+    {{ 2,-2, 0}, {-2, 2, 0}},  // pyro_sl=2 → pyro_sl=1
+    {}
+};
+static const std::vector<std::vector<idx3_t>> nn1_pair_13 = {
+    {},
+    {{-2, 0, 2}, { 2, 0,-2}},  // pyro_sl=1 → pyro_sl=3
+    {},
+    {{ 2, 0,-2}, {-2, 0, 2}}   // pyro_sl=3 → pyro_sl=1
+};
+static const std::vector<std::vector<idx3_t>> nn1_pair_23 = {
+    {},
+    {},
+    {{ 0,-2, 2}, { 0, 2,-2}},  // pyro_sl=2 → pyro_sl=3
+    {{ 0, 2,-2}, { 0,-2, 2}}   // pyro_sl=3 → pyro_sl=2
 };
 
 // Square roots of 2, 3, and 6 for normalisation

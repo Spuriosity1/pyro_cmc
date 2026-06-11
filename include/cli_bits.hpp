@@ -45,6 +45,11 @@ inline auto declare_LJ123(argparse::ArgumentParser& prog){
         .help("Spiral wavevector z-component in units of 2pi/a_cubic; J3 is set to minimise spiral energy "
               "(mutually exclusive with --J3). Rounded to nearest supercell-commensurate value.")
         .scan<'g', double>();
+    prog.add_argument("--Delta")
+        .help("Nearest-neighbour XXZ anisotropy (local [111] frame): Jz = Delta*J1, Jperp = J1. "
+              "Delta=1 is isotropic Heisenberg.")
+        .default_value(1.0)
+        .scan<'g', double>();
     prog.add_argument("--external_field", "-B")
         .help("Global magnetic field")
         .nargs(3)
@@ -128,8 +133,40 @@ inline auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& l
         printf("Using Qz=%.10g -> J3=%.10g\n", Qz_rounded, J3);
     }
 
+    auto Delta = prog.get<double>("--Delta");
+
     CMC::MC_runner mc(lat, seed);
-    mc.define_coupling("J1", pyrochlore::nn1_dist, J1*coupling::Heis);
+
+    // J1 as six sublattice-pair specs for local-frame XXZ.
+    // For pair (mu, nu) with mu < nu, J_spec = J1 * [I + (Delta-1) * z_nu ⊗ z_mu].
+    // bonds_above/bonds_below are split by pyro_sl order so J_spec is applied
+    // consistently: h_nu += J_spec * S_mu,  h_mu += J_spec^T * S_nu.
+    {
+        using vec3d = vector3::vec3<double>;
+        static const std::pair<int,int> pairs[6] =
+            {{0,1},{0,2},{0,3},{1,2},{1,3},{2,3}};
+        static const std::vector<std::vector<ipos_t>>* nn1_pairs[6] = {
+            &pyrochlore::nn1_pair_01, &pyrochlore::nn1_pair_02, &pyrochlore::nn1_pair_03,
+            &pyrochlore::nn1_pair_12, &pyrochlore::nn1_pair_13, &pyrochlore::nn1_pair_23
+        };
+        for (int k = 0; k < 6; k++) {
+            auto [mu, nu] = pairs[k];
+            const vec3d& z_mu = pyrochlore::axis[mu][2];
+            const vec3d& z_nu = pyrochlore::axis[nu][2];
+            // J_spec = J1*I + J1*(Delta-1)*(z_nu ⊗ z_mu)
+            // column j of (z_nu ⊗ z_mu) is z_mu[j]*z_nu
+            // mat33d::from_cols takes std::array<double,3>, so convert explicitly
+            auto v2a = [](vec3d v) -> std::array<double,3> {
+                return {v[0], v[1], v[2]};
+            };
+            mat33d J_spec = mat33d::from_cols(
+                v2a(J1*(Delta-1)*z_mu[0]*z_nu + vec3d(J1, 0.0, 0.0)),
+                v2a(J1*(Delta-1)*z_mu[1]*z_nu + vec3d(0.0, J1, 0.0)),
+                v2a(J1*(Delta-1)*z_mu[2]*z_nu + vec3d(0.0, 0.0, J1)));
+            std::string pname = "J1_" + std::to_string(mu) + std::to_string(nu);
+            mc.define_coupling(pname, *nn1_pairs[k], J_spec, /*use_pyro_sl_ordering=*/true);
+        }
+    }
     mc.define_coupling("J2", pyrochlore::nn2_dist, J2*coupling::Heis);
     mc.define_coupling("J3a", pyrochlore::nn3a_dist, J3*coupling::Heis);
     mc.define_coupling("J3b", pyrochlore::nn3b_dist, J3*coupling::Heis);
@@ -155,13 +192,15 @@ inline auto name_LJ123(const argparse::ArgumentParser& prog){
     auto J1 = prog.get<double>("--J1");
     auto J2 = prog.get<double>("--J2");
     auto J3 = resolve_J3(prog);
+    auto Delta = prog.get<double>("--Delta");
     int L = prog.get<int>("L");
 
     std::stringstream name;
     name << "L="<<L<<DELIM<<
         "J1="<<J1<<DELIM<<
         "J2="<<J2<<DELIM<<
-        "J3="<<J3<<DELIM;
+        "J3="<<J3<<DELIM<<
+        "Delta="<<Delta<<DELIM;
     if (prog.is_used("--Qz")) {
         double Qz_rounded = round_Qz_to_supercell(prog.get<double>("--Qz"), L);
         name << "Qz="<<Qz_rounded<<DELIM;

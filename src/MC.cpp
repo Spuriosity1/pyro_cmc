@@ -29,7 +29,10 @@ namespace CMC {
                     for (const auto& v : c.relative_vectors.at(pyro_sl)) {
                         HeisenbergSpin* other =
                             lat.get_object_at<HeisenbergSpin>(link->ipos + v);
-                        if (other < link) {
+                        bool above = c.use_pyro_sl_ordering
+                            ? (other->pyro_sl < pyro_sl)
+                            : (other < link);
+                        if (above) {
                             shell_above.push_back(other);
                         } else {
                             shell_below.push_back(other);
@@ -45,14 +48,15 @@ namespace CMC {
 
     void MC_runner::define_coupling(const std::string& name,
             const std::vector<std::vector<ipos_t>>& rel_vecs,
-            const vector3::mat33<double>& J)
+            const vector3::mat33<double>& J,
+            bool use_pyro_sl_ordering)
     {
         if (index.contains(name)){
             throw std::logic_error("Coupling names must be unique");
         }
 
         index[name] = coupling_specs.size();
-        coupling_specs.push_back({name, rel_vecs, J});
+        coupling_specs.push_back({name, rel_vecs, J, use_pyro_sl_ordering});
     }
 
 

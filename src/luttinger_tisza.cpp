@@ -19,44 +19,61 @@
 using namespace std;
 
 // Precomputed directed bond for the LT matrix.
-// J = j·I_3 (scalar Heisenberg), so M(k) is n_sl×n_sl complex Hermitian.
+// For XXZ, J is a 3×3 matrix, so M(k) is (3·n_sl)×(3·n_sl) complex Hermitian.
 // Each undirected bond appears twice (once per direction), so the physical
 // energy per spin is (1/2)·λ_min.
 struct LTBond {
-    int    alpha, beta; // source / target sublattice (0..n_sl-1)
-    ipos_t disp;        // full integer displacement from alpha to beta (= sl_pos[beta] + t_cell - sl_pos[alpha])
-    double j;           // scalar exchange
+    int    alpha, beta;      // source / target sublattice (0..n_sl-1)
+    ipos_t disp;             // full integer displacement from alpha to beta
+    Eigen::Matrix3d J;       // 3×3 coupling matrix
 };
 
 static vector<LTBond> build_bonds(
         LatticeIndexing& lat,
         const vector<ipos_t>& sl_pos,
-        double J1, double J2, double J3)
+        double J1, double J2, double J3, double Delta)
 {
     using DistTable = const vector<vector<ipos_t>>;
-    const struct { double j; DistTable* dist; } specs[] = {
-        {J1, &pyrochlore::nn1_dist},
-        {J2, &pyrochlore::nn2_dist},
-        {J3, &pyrochlore::nn3a_dist},
-        {J3, &pyrochlore::nn3b_dist},
+    // {coupling strength, distance table, is_J1 (XXZ applies only to J1)}
+    const struct { double j; DistTable* dist; bool xxz; } specs[] = {
+        {J1, &pyrochlore::nn1_dist,  true},
+        {J2, &pyrochlore::nn2_dist,  false},
+        {J3, &pyrochlore::nn3a_dist, false},
+        {J3, &pyrochlore::nn3b_dist, false},
     };
 
     const int n_sl = static_cast<int>(sl_pos.size());
     vector<LTBond> bonds;
 
-    for (auto& [j, dist] : specs) {
+    for (auto& [j, dist, xxz] : specs) {
         if (j == 0.0) continue;
         for (int sl = 0; sl < n_sl; sl++) {
             const int pyro_sl = sl % 4;
             for (const auto& v : (*dist)[pyro_sl]) {
-                ipos_t ref = sl_pos[sl] + v; // copy; get_supercell_IDX mutates in place
-                lat.get_supercell_IDX(ref);  // wrap ref to primitive cell (discard returned I)
+                ipos_t ref = sl_pos[sl] + v;
+                lat.get_supercell_IDX(ref);
                 int beta = -1;
                 for (int s = 0; s < n_sl; s++) {
                     if (sl_pos[s] == ref) { beta = s; break; }
                 }
                 assert(beta >= 0 && "bond target not found in sl_positions");
-                bonds.push_back({sl, beta, v, j});
+
+                Eigen::Matrix3d J_mat;
+                if (xxz && Delta != 1.0) {
+                    // J_bond = j·[I + (Delta-1)·ẑ_μ ⊗ ẑ_ν]
+                    // where μ = pyro_sl of source, ν = pyro_sl of target
+                    int mu = sl   % 4;
+                    int nu = beta % 4;
+                    const auto& zm = pyrochlore::axis[mu][2];
+                    const auto& zn = pyrochlore::axis[nu][2];
+                    Eigen::Vector3d z_mu(zm[0], zm[1], zm[2]);
+                    Eigen::Vector3d z_nu(zn[0], zn[1], zn[2]);
+                    J_mat = j * (Eigen::Matrix3d::Identity()
+                                 + (Delta - 1.0) * z_mu * z_nu.transpose());
+                } else {
+                    J_mat = j * Eigen::Matrix3d::Identity();
+                }
+                bonds.push_back({sl, beta, v, J_mat});
             }
         }
     }
@@ -89,9 +106,10 @@ int main(int argc, char* argv[])
             throw runtime_error("output_dir does not exist: " + outdir_s);
     }
 
-    const double J1 = prog.get<double>("--J1");
-    const double J2 = prog.get<double>("--J2");
-    const double J3 = resolve_J3(prog);
+    const double J1    = prog.get<double>("--J1");
+    const double J2    = prog.get<double>("--J2");
+    const double J3    = resolve_J3(prog);
+    const double Delta = prog.get<double>("--Delta");
 
     // Build LatticeIndexing directly — no Supercell<HeisenbergSpin> needed.
     const int L = prog.get<int>("L");
@@ -114,29 +132,37 @@ int main(int argc, char* argv[])
 
     const int Nk           = lat.num_primitive_cells();
     const ivec3_t k_dims   = lat.size();
-    const auto bonds       = build_bonds(lat, sl_pos, J1, J2, J3);
+    const auto bonds       = build_bonds(lat, sl_pos, J1, J2, J3, Delta);
 
     // -----------------------------------------------------------------------
     // Sweep BZ: build M(k) and track minimum eigenvalue
+    //
+    // For XXZ, J is a 3×3 matrix, so M(k) is (3·n_sl)×(3·n_sl) complex
+    // Hermitian. Block M[3α:3α+3, 3β:3β+3] accumulates J_bond·e^{ik·d}.
+    // Hermiticity follows from the directed-bond sweep: the reverse bond
+    // (β→α, disp=-d) contributes J_bond^T·e^{-ik·d} = M_αβ†.
     // -----------------------------------------------------------------------
     using MatC = Eigen::MatrixXcd;
+    const int M_dim = 3 * n_sl;
 
     vector<double> eigenvalue_map(Nk);
     double E_min = numeric_limits<double>::max();
     idx3_t k_star_idx{};
-    Eigen::VectorXcd eigvec_star(n_sl);
+    Eigen::VectorXcd eigvec_star(M_dim);
 
     for (int k_flat = 0; k_flat < Nk; k_flat++) {
         const idx3_t Q   = lat.idx3_from_flat(k_flat);
         const auto k_vec = lat.wavevector_from_idx3(Q);
 
-        MatC M = MatC::Zero(n_sl, n_sl);
+        MatC M = MatC::Zero(M_dim, M_dim);
         for (const auto& b : bonds) {
             const double phase =
                 k_vec[0] * (double)b.disp[0] +
                 k_vec[1] * (double)b.disp[1] +
                 k_vec[2] * (double)b.disp[2];
-            M(b.alpha, b.beta) += b.j * complex<double>(cos(phase), sin(phase));
+            complex<double> eph(cos(phase), sin(phase));
+            M.block<3,3>(3*b.alpha, 3*b.beta) +=
+                b.J.cast<complex<double>>() * eph;
         }
         // M is Hermitian by construction (full directed-bond sweep)
 
@@ -145,8 +171,8 @@ int main(int argc, char* argv[])
         eigenvalue_map[k_flat] = lmin;
 
         if (lmin < E_min) {
-            E_min      = lmin;
-            k_star_idx = Q;
+            E_min       = lmin;
+            k_star_idx  = Q;
             eigvec_star = eigs.eigenvectors().col(0);
         }
     }
@@ -157,9 +183,12 @@ int main(int argc, char* argv[])
     const auto k_star_vec = lat.wavevector_from_idx3(k_star_idx);
 
     printf("LT minimum: λ_min = %.6f  E/spin = %.6f\n", E_min, E_per_spin);
+    // Print per-sublattice weight: sum of |components|² over the 3 spin dofs
     printf("Eigvec sublattice |s_α|² :");
-    for (int s=0; s<n_sl; s++)
-        printf(" %.4f", norm(eigvec_star(s)));
+    for (int s = 0; s < n_sl; s++) {
+        double w = norm(eigvec_star(3*s)) + norm(eigvec_star(3*s+1)) + norm(eigvec_star(3*s+2));
+        printf(" %.4f", w);
+    }
     printf("\n");
 
     printf("k*  idx = [%lld, %lld, %lld]\n",
@@ -222,14 +251,14 @@ int main(int argc, char* argv[])
         H5Sclose(sp);
     }
 
-    // eigenvector [n_sl, 2] (columns: re, im)
+    // eigenvector [3*n_sl, 2] (re/im; rows ordered as [spin-x,y,z for sl-0, sl-1, ...])
     {
-        vector<double> ev(2 * n_sl);
-        for (int s = 0; s < n_sl; s++) {
+        vector<double> ev(2 * M_dim);
+        for (int s = 0; s < M_dim; s++) {
             ev[2*s]   = eigvec_star(s).real();
             ev[2*s+1] = eigvec_star(s).imag();
         }
-        hsize_t dims[2] = { static_cast<hsize_t>(n_sl), 2 };
+        hsize_t dims[2] = { static_cast<hsize_t>(M_dim), 2 };
         hid_t sp = H5Screate_simple(2, dims, nullptr);
         hid_t ds = H5Dcreate2(fid, "eigenvector", H5T_NATIVE_DOUBLE, sp,
                                H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);

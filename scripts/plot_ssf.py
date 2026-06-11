@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import re
 import sys
 import numpy as np
 import h5py
@@ -70,20 +71,39 @@ def apply_phases(corr, corr_lookup, sl_positions, k_dims, n_ssf):
         np.einsum("kmn,ctkmn->ctk", w, corr)
     )  # [n_corr, n_T, n_k]
 
-    contracted /= n_ssf[np.newaxis, :, np.newaxis]
+    contracted /= n_ssf[np.newaxis, :, np.newaxis] 
 
     k0, k1, k2 = k_dims
     contracted = contracted.reshape(len(corr_lookup), -1, k0, k1, k2)
     return {label: contracted[i] for i, label in enumerate(corr_lookup)}
 
 def parse_params(path):
-    """Extract key=value tokens from a filename stem into an ordered dict."""
-    stem = os.path.splitext(os.path.basename(path))[0]
+    """Extract key=value tokens from a filename stem into an ordered dict.
+
+    Strips all extensions (e.g. .avg.h5).  Bare tokens are split at the
+    first digit boundary: 'b512' -> {'b': '512'}, 'merge64' -> {'merge': '64'}.
+    Pure-alpha bare tokens like 'ec' are stored as {'ec': ''}.
+    """
+    stem = os.path.basename(path)
+    while True:
+        base, ext = os.path.splitext(stem)
+        if not ext:
+            break
+        stem = base
+
     params = {}
     for token in stem.split("_"):
+        if not token:
+            continue
         if "=" in token:
             k, v = token.split("=", 1)
             params[k] = v
+        else:
+            m = re.match(r'^([A-Za-z]+)(\d.*)$', token)
+            if m:
+                params[m.group(1)] = m.group(2)
+            else:
+                params[token] = ''
     return params
 
 
@@ -157,9 +177,11 @@ def plot_ssf(ax, file, args, title=""):
     idx[sa] = sl
     idx = tuple(idx)  # applied as data_3d[t_idx][idx]
 
-    ax.set_title(title)
+    ax.set_title(title, fontsize=6)
 
     data = np.fft.fftshift(data_3d[t_idx][idx])
+    data /= (16 * k_dims[0]*k_dims[1]*k_dims[2])
+
     vmax = 10**args.vmax
     if args.vmin:
         vmin = 10**args.vmin
@@ -226,7 +248,7 @@ def main():
     p.add_argument("--fcc", action="store_true",
                    help="Tile with BCC-type shifts to show full FCC reciprocal lattice")
     p.add_argument("--vmin", type=float)
-    p.add_argument("--vmax", default=4, type=float)
+    p.add_argument("--vmax", default=1, type=float)
 
     p.add_argument("-o", "--output", default=None,
                    help="Save figure to file instead of displaying")
@@ -236,6 +258,8 @@ def main():
     n_panels = len(files)
 
     fixed, varying_keys, all_params = split_fixed_varying(files)
+
+    print(varying_keys)
     panel_titles = [
         "  ".join(f"{k}={p.get(k, '?')}" for k in varying_keys) or os.path.basename(f)
         for f, p in zip(files, all_params)
