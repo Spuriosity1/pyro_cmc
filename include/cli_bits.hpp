@@ -92,8 +92,11 @@ inline double resolve_J3(const argparse::ArgumentParser& prog) {
     if (has_Qz) {
         int    L  = prog.get<int>("L");
         double Qz = round_Qz_to_supercell(prog.get<double>("--Qz"), L);
-        double J2 = prog.get<double>("--J2");
-        return J3_from_Qz(J2, Qz);
+        double J1 = prog.get<double>("--J1");
+        double J2_eff = prog.get<double>("--J2") / std::abs(J1);
+        double J3 = J3_from_Qz(J2_eff, Qz) * std::abs(J1);
+        std::cout<<"Calculated J3="<<J3<<std::endl;
+        return J3;
     }
     return prog.get<double>("--J3");
 }
