@@ -84,12 +84,7 @@ def parse_params(path):
     first digit boundary: 'b512' -> {'b': '512'}, 'merge64' -> {'merge': '64'}.
     Pure-alpha bare tokens like 'ec' are stored as {'ec': ''}.
     """
-    stem = os.path.basename(path)
-    while True:
-        base, ext = os.path.splitext(stem)
-        if not ext:
-            break
-        stem = base
+    stem = re.sub(r'(\.[a-zA-Z][a-zA-Z0-9]*)+$', '', os.path.basename(path))
 
     params = {}
     for token in stem.split("_"):
@@ -269,7 +264,7 @@ def main():
     if fixed_str:
         suptitle += f"\n{fixed_str}"
 
-    fig, axes = plt.subplots(1, n_panels, figsize=(2 * n_panels, 3))
+    fig, axes = plt.subplots(1, n_panels, figsize=(2 * n_panels, 3), sharex=True, sharey=True)
 
     if n_panels == 1:
         axes = [axes]
