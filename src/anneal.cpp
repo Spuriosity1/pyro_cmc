@@ -58,6 +58,9 @@ int main (int argc, char *argv[]) {
     prog.add_argument("--T_hot")
         .help("Temperature  to begin annealing from")
         .scan<'g',double>();
+    prog.add_argument("--T_cold")
+        .help("Minimum temperature (defaults ti smallest T_sample)")
+        .scan<'g',double>();
     prog.add_argument("--T_ref")
         .help("Reference temperature for proposal distribution")
         .default_value(1.0)
