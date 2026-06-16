@@ -30,12 +30,14 @@ Output: `build/anneal` (installed), `build/spiral_byhand` (test utility, not ins
 
 ### `anneal` — main executable
 
-Runs simulated annealing from `T_hot` down to `T_cold` in `n_steps` logarithmically spaced steps, then accumulates SSF and energy statistics at each temperature.
+Runs simulated annealing from `T_hot` down to `T_cold` in `n_steps` logarithmically spaced steps.
+Energy statistics are collcted at all temperatures, SSF statistics are collected only at the specified `T_sample`s.
 
 ```
 anneal -o <output_dir> -s <hex_seed> L <int>
        --J1 <float> [--J2 <float>] [--J3 <float>]
-       [--T_hot <float>] --T_cold <float>
+       [--T_hot <float>] [--T_cold <float>]
+       --T_sample <float> [<float> <float> ...]
        [--T_ref <float>] [--n_steps <int>]
        [--n_sweep <int>] [--n_burn_in <int>] [--n_sample <int>]
        [-B <bx> <by> <bz>] [--save_state]
@@ -153,5 +155,5 @@ scripts/
 
 - **Lattice:** Pyrochlore — 16 sublattices per 8×8×8 cubic conventional cell (4 FCC sites × 4 corner-sharing tetrahedron vertices).
 - **Hamiltonian:** H = Σ_{⟨ij⟩_n} J_n S_i · S_j − B · Σ_i S_i (isotropic Heisenberg, up to third neighbours).
-- **Metropolis proposal:** Gaussian kick in ℝ³ re-normalised to the unit sphere; width ∝ √(T/T_ref).
-- **SSF:** S^{αβ}(q) = (1/N) Σ_{μν} e^{iq·(r_μ−r_ν)} ⟨S^α_μ(q) S^{β*}_ν(q)⟩, with q on a uniform grid set by `k_dims`.
+- **Metropolis proposal:** Gaussian kick in ℝ³ re-normalised to the unit sphere; width ∝ √(T/T_ref) + over-relaxation
+- **SSF:** S^{αβ}(q) = (1/N) Σ_{μν} e^{iq·(r_μ−r_ν)} ⟨S^α_μ(q) S^{β*}_ν(q)⟩, with q on a uniform 3D grid set by `k_dims`.

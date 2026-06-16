@@ -12,9 +12,7 @@ import h5py
 # Merges across seeds and computes the cross-seed variance of the energy
 # per primitive cell, e = E_total / N_primitive_cells.
 #
-# With n_samples=1 per temperature step per run (as produced by anneal),
-# within-run variance is zero; cross-seed variance is the meaningful estimate
-# of thermal fluctuations.
+# Assumes all seeds use identical --n_sample (uniform n_per_seed per temperature).
 #
 # Writes:
 #   <params>_mergeK_.avg.h5  — merged over K seeds
@@ -31,6 +29,17 @@ import h5py
 # /geometry:
 #   index_cell
 #   recip_vectors
+#
+# Datasets in /ssf:
+#   static_corr      — Σ_seeds raw sum of per-sample correlators [n_corr,n_T,n_k,n_sl,n_sl,2]
+#   static_corr_2    — Σ_seeds (per-seed raw sum)²  [same shape]  ← inter-seed 2nd moment
+#   n_samples        — total sample count across seeds [n_T]
+#   var_inter        — inter-seed variance of C_{μν}(k): Var_seeds[mean_C_seed] [same shape]
+#   var_intra        — sum of per-seed intrinsic variances of C_{μν}(k) [same shape]
+#                      (absent if no seed file contained static_corr_2)
+#   T_list, corr_lookup, sl_positions, attrs — copied from first file
+#
+# Last dim of all corr arrays is [Re, Im], storing Re and Im variances separately.
 #
 # Heat capacity per spin: C/N = var * N_prim / (T² * N_spins)
 #                              = var / (T² * 16)
@@ -75,9 +84,10 @@ def load_ssf_raw(fname):
         n_samples = np.array(g["n_samples"])
         sl_pos = np.array(g["sl_positions"])
         static_corr  = np.array(g["static_corr"])
+        static_corr_2 = np.array(g["static_corr_2"]) if "static_corr_2" in g else None
         attrs = {k: v for k, v in g.attrs.items()}
 
-    return T, corr_lookup, n_samples, sl_pos, static_corr, attrs
+    return T, corr_lookup, n_samples, sl_pos, static_corr, static_corr_2, attrs
 
 _COMPATIBLE_TAGS = {
     "L":   (r"L=(\d+)_",              int),
@@ -97,7 +107,6 @@ def parse_tags(fname):
             raise ValueError(f"No {name}=<val> tag in: {base}")
         tags[name] = cast(m.group(1))
     return tags
-
 
 def check_compatibility(fnames):
     ref = parse_tags(fnames[0])
@@ -159,20 +168,22 @@ def main(fnames):
     ssf_attrs_ref = None
 
     total_static_corr = None
-    total_static_corr_2 = None
+    total_static_corr_2 = None   # Σ_seeds C_s²  (inter-seed 2nd moment)
+    total_intrinsic_corr_2 = None  # Σ_seeds static_corr_2[seed]  (intra-seed 2nd moment)
     total_static_samp = None
 
     for fname in fnames:
-        T, corr_lookup, n_samp, sl_pos, static_corr, attrs = load_ssf_raw(fname)
+        T, corr_lookup, n_samp, sl_pos, static_corr, static_corr_2, attrs = load_ssf_raw(fname)
         if T_ref_ssf is None:
             T_ref_ssf = T
             corr_lookup_ref = corr_lookup
             sl_positions_ref = sl_pos
             ssf_attrs_ref = attrs
 
-            total_static_corr = static_corr
-            total_static_corr_2 = static_corr **2
-            total_static_samp = n_samp
+            total_static_corr = static_corr.copy()
+            total_static_corr_2 = static_corr**2
+            total_static_samp = n_samp.copy()
+            total_intrinsic_corr_2 = static_corr_2.copy() if static_corr_2 is not None else None
         else:
             if not np.allclose(T_ref_ssf, T):
                 raise RuntimeError(f"Temperature range of file {fname} incompatible")
@@ -194,12 +205,41 @@ def main(fnames):
             total_static_corr += static_corr
             total_static_corr_2 += static_corr**2
             total_static_samp += n_samp
+            if total_intrinsic_corr_2 is not None:
+                if static_corr_2 is not None:
+                    total_intrinsic_corr_2 += static_corr_2
+                else:
+                    print(f"Warning: {fname} has no static_corr_2; dropping var_intra",
+                          file=sys.stderr)
+                    total_intrinsic_corr_2 = None
             
 
     K = len(fnames)
     e_mean  = E_total  / n_total
     e2_mean = E2_total / n_total
     var     = e2_mean - e_mean**2
+
+    # SSF variance terms.
+    # Assumes uniform n_per_seed across seeds; n_per_seed[t] = total_samp[t] / K.
+    # Both var arrays have shape [n_corr, n_T, n_k, n_sl, n_sl, 2] where the last
+    # dimension stores [Re variance, Im variance] independently.
+    n_per_seed = total_static_samp / K   # [n_T]
+    # broadcast over [n_corr, n_T, n_k, n_sl, n_sl, 2]
+    n_ = n_per_seed[np.newaxis, :, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
+
+    # Inter-seed variance: Var_seeds[mean_C_seed]
+    #   = (1/K) Σ_s (C_s/n)² − ((1/K) Σ_s C_s/n)²
+    #   = total_corr2/(K·n²) − (total_corr/(K·n))²
+    ssf_var_inter = (total_static_corr_2 / (K * n_**2)
+                     - (total_static_corr / (K * n_))**2)
+
+    # Sum of per-seed intrinsic variances: Σ_s Var_intra_s
+    #   = Σ_s [C2_s/n − (C_s/n)²]
+    #   = total_intr_C2/n − total_corr2/n²
+    if total_intrinsic_corr_2 is not None:
+        ssf_var_intra = total_intrinsic_corr_2 / n_ - total_static_corr_2 / n_**2
+    else:
+        ssf_var_intra = None
 
     idx, rcv = load_geometry(fnames[0])
 
@@ -220,12 +260,15 @@ def main(fnames):
         gg.create_dataset("recip_vectors", data=rcv)
 
         sg = f.create_group("ssf")
-        sg.create_dataset("T_list",       data=T_ref_ssf)
-        sg.create_dataset("corr_lookup",  data=corr_lookup_ref)
-        sg.create_dataset("n_samples",    data=total_static_samp)
-        sg.create_dataset("static_corr",  data=total_static_corr)
-        sg.create_dataset("static_corr_2",  data=total_static_corr_2)
-        sg.create_dataset("sl_positions", data=sl_positions_ref)
+        sg.create_dataset("T_list",        data=T_ref_ssf)
+        sg.create_dataset("corr_lookup",   data=corr_lookup_ref)
+        sg.create_dataset("n_samples",     data=total_static_samp)
+        sg.create_dataset("static_corr",   data=total_static_corr)
+        sg.create_dataset("static_corr_2", data=total_static_corr_2)
+        sg.create_dataset("var_inter",     data=ssf_var_inter)
+        if ssf_var_intra is not None:
+            sg.create_dataset("var_intra", data=ssf_var_intra)
+        sg.create_dataset("sl_positions",  data=sl_positions_ref)
         for k, v in ssf_attrs_ref.items():
             sg.attrs[k] = v
 

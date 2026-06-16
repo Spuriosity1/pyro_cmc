@@ -6,6 +6,11 @@
 namespace CMC {
 
 
+    vector3::vec3d cross(const vector3::vec3d& a, const vector3::vec3d& b){
+        return {a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]};
+    }
+
+
     void MC_runner::setup_lattice(){
         int coup_idx = 0;
         for (const auto& c : coupling_specs){
@@ -29,9 +34,7 @@ namespace CMC {
                     for (const auto& v : c.relative_vectors.at(pyro_sl)) {
                         HeisenbergSpin* other =
                             lat.get_object_at<HeisenbergSpin>(link->ipos + v);
-                        bool above = c.use_pyro_sl_ordering
-                            ? (other->pyro_sl < pyro_sl)
-                            : (other < link);
+                        bool above = other < link;
                         if (above) {
                             shell_above.push_back(other);
                         } else {
@@ -99,6 +102,15 @@ namespace CMC {
         v = -v + 2 *(dot(axis, v) / (dot(axis, axis) + 1e-10) ) * axis;
     }
 
+    void rotate_about_vector(vector3::vec3d& v, const vector3::vec3d& axis, double theta){
+        // generates a random vector with fixed projection onto axis
+        double c = std::cos(theta);
+        double s = std::sin(theta);
+        double norm2 = dot(axis, axis);
+        // Rodruigez formula
+        v = c * v + ((1-c)/norm2) * dot(axis, v) * axis + (s / sqrt(norm2)) * cross(axis, v);
+    }
+
     size_t MC_runner::local_Metropolis(double T, HeisenbergSpin* spin)
     {
         auto h_loc = local_field(spin) - global_field;
@@ -121,7 +133,7 @@ namespace CMC {
     }
 
     // overrelaxes proportion p of the spins
-    void MC_runner::overrelax_all(double p){
+    void MC_runner::overrelax_some(double p){
         auto& spins = lat.get_objects<HeisenbergSpin>();
 
         for (int i=0; i<p*spins.size(); ++i) {
@@ -131,12 +143,24 @@ namespace CMC {
         }
     }
 
+
+    // overrelaxes proportion p of the spins
+    void MC_runner::overrelax_all(){
+        auto& spins = lat.get_objects<HeisenbergSpin>();
+
+        for (size_t i=0; i<spins.size(); ++i) {
+            auto* spin = &spins[i];
+            auto h_loc = local_field(spin) - global_field;
+            rotate_about_vector(spin->S, h_loc, 2*M_PI*rand01(rng));
+        }
+    }
+
     size_t MC_runner::sweep_local_Metropolis(double T){
         size_t accepted = 0;
         for (auto& spin : lat.get_objects<HeisenbergSpin>()){
             accepted += local_Metropolis(T, &spin);
         }
-        overrelax_all(0.3);
+        overrelax_all();
         return accepted;
     }
 

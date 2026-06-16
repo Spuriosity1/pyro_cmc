@@ -44,6 +44,9 @@ struct CorrSpec {
 // Accumulates, per temperature and per requested (α,β) pair:
 //
 //   C^{αβ}_{μν}(q) = Σ_samples  conj(Ã_μ^α(q)) · Ã_ν^β(q)
+//   and the error term,
+//   sq_C^{αβ}_{μν}(q) = Σ_samples  conj(Ã_μ^α(q)) · Ã_ν^β(q) ^2 entrywise as real and imaginary parts
+//
 //
 // where Ã_μ^α is the raw per-cell DFT of spin component α on sublattice μ
 // (sublattice phase exp(−i q·r_μ) NOT included; apply in post-processing via
@@ -51,6 +54,7 @@ struct CorrSpec {
 //
 // HDF5 output layout (write_group):
 //   static_corr  [n_corr, n_T, n_k, n_sl, n_sl, 2]  — last dim = re/im
+//   static_corr_2  [n_corr, n_T, n_k, n_sl, n_sl, 2]
 //   corr_lookup  [n_corr]                             — VL strings, e.g. "xx", "xz"
 //   T_list       [n_T]                                — temperatures, sorted ascending
 //   n_samples    [n_T]
@@ -72,6 +76,7 @@ class ssf_manager : public abstract_manager {
     std::vector<CorrSpec> corr_specs_;
     // corr_[corr_idx][temp_idx] — grows via on_new_temp()
     std::vector<std::vector<FourierCorrelator<CMC::HeisenbergSpin>>> corr_;
+    std::vector<std::vector<FourierCorrelator<CMC::HeisenbergSpin>>> corr_sq_;
 
     int n_sl_;
     int n_kpoints_;
@@ -79,8 +84,12 @@ class ssf_manager : public abstract_manager {
     ivec3_t k_dims_;
     std::vector<ipos_t> sl_positions_;
 
+    const bool store_error_term_;
+
     void on_new_temp() override {
         for (auto& v : corr_)
+            v.emplace_back(n_sl_, k_dims_);
+        for (auto& v : corr_sq_)
             v.emplace_back(n_sl_, k_dims_);
     }
 
@@ -89,7 +98,7 @@ public:
     // correlator_names: 2-char component-pair strings, e.g. {"xx","yy","zz","xy"}.
     ssf_manager(CMC::Lattice& sc,
                 const std::vector<std::string>& correlator_names,
-                size_t n_temperatures_reserve = 0)
+                size_t n_temperatures_reserve = 0, bool store_error_term=true)
         : n_sl_(static_cast<int>(
               std::get<SlPos<CMC::HeisenbergSpin>>(sc.sl_positions).size())),
           n_kpoints_(sc.lattice.num_primitive_cells()),
@@ -97,7 +106,8 @@ public:
           k_dims_(sc.lattice.size()),
           sl_positions_(
               std::get<SlPos<CMC::HeisenbergSpin>>(sc.sl_positions).begin(),
-              std::get<SlPos<CMC::HeisenbergSpin>>(sc.sl_positions).end())
+              std::get<SlPos<CMC::HeisenbergSpin>>(sc.sl_positions).end()),
+          store_error_term_(store_error_term)
     {
         T_list.reserve(n_temperatures_reserve);
         n_samples.reserve(n_temperatures_reserve);
@@ -127,8 +137,9 @@ public:
         if (need[2]) ft_z_.emplace(sc);
 
         corr_.resize(corr_specs_.size());
-        for (auto& v : corr_)
-            v.reserve(n_temperatures_reserve);
+        corr_sq_.resize(corr_specs_.size());
+        for (auto& v : corr_) v.reserve(n_temperatures_reserve);
+        for (auto& v : corr_sq_) v.reserve(n_temperatures_reserve);
     }
 
     // Fourier-transform the current spin configuration and accumulate C^{αβ}_{μν}(q).
@@ -144,10 +155,22 @@ public:
             return ft_z_->get_buffer();
         };
 
-        for (size_t c = 0; c < corr_specs_.size(); ++c)
-            correlate_add(corr_[c][curr_idx],
-                          buf(corr_specs_[c].alpha),
-                          buf(corr_specs_[c].beta));
+        for (size_t c = 0; c < corr_specs_.size(); ++c) {
+            auto this_corr = correlate(buf(corr_specs_[c].alpha),
+                    buf(corr_specs_[c].beta));
+            // calculate the dirrect correlator
+            corr_[c][curr_idx] += this_corr;
+
+            if (store_error_term_){
+                // ---- error term: compute entrywise squares of all terms in corr_specs
+                for (int i=0; i<n_sl_; i++)
+                    for (int j=0; j<n_sl_; j++)
+                        for (auto& C_k : this_corr(i,j))
+                            C_k= {C_k.real()*C_k.real(), C_k.imag()*C_k.imag()};
+
+                corr_sq_[c][curr_idx] += this_corr;
+            }
+        }
 
         n_samples[curr_idx]++;
     }
@@ -202,35 +225,63 @@ inline void ssf_manager::write_group(hid_t file_id, const char* group_name) {
     };
 
     // --- static_corr [n_corr, n_T, n_k, n_sl, n_sl, 2] ---
+    // --- static_corr_2 [n_corr, n_T, n_k, n_sl, n_sl, 2] ---
     {
         hsize_t dims[6] = { n_corr, n_T, nk, ns, ns, 2 };
         hid_t sp = H5Screate_simple(6, dims, nullptr);
-        hid_t ds = H5Dcreate2(grp, "static_corr", H5T_NATIVE_DOUBLE, sp,
+
+        auto n_entries = n_corr * n_T * nk * ns * ns * 2;
+        std::vector<double> buf, sq_buf;
+        hid_t sum_ds=0, sum_sq_ds=0;
+
+
+        buf.resize(n_entries);
+        sum_ds = H5Dcreate2(grp, "static_corr", H5T_NATIVE_DOUBLE, sp,
                                H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (ds < 0) {
-            H5Sclose(sp);
-            H5Gclose(grp);
-            throw std::runtime_error("ssf_manager: failed to create static_corr");
+
+        if (store_error_term_) {
+            sq_buf.resize(n_entries);
+            sum_sq_ds = H5Dcreate2(grp, "static_corr_2", H5T_NATIVE_DOUBLE, sp,
+                               H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
         }
 
-        std::vector<double> buf(n_corr * n_T * nk * ns * ns * 2);
+        if (sum_ds < 0 || sum_sq_ds < 0) {
+            H5Sclose(sp);
+            H5Gclose(grp);
+            throw std::runtime_error("ssf_manager: failed to create static_corr or static_corr_2");
+        }
+
         for (size_t c = 0; c < n_corr; ++c)
             for (size_t t = 0; t < n_T; ++t) {
                 const auto& corr = corr_[c][ord[t]];
+                const auto& corr_sq = corr_sq_[c][ord[t]];
                 for (hsize_t mu = 0; mu < ns; ++mu)
                     for (hsize_t nu = 0; nu < ns; ++nu)
                         for (hsize_t k = 0; k < nk; ++k) {
                             const auto val = corr(static_cast<int>(mu),
                                                   static_cast<int>(nu))[k];
+                            const auto sq_val = corr_sq(static_cast<int>(mu),
+                                                  static_cast<int>(nu))[k];
                             const size_t base =
                                 ((((c * n_T + t) * nk + k) * ns + mu) * ns + nu);
                             buf[base * 2]     = val.real();
                             buf[base * 2 + 1] = val.imag();
+
+                            if (store_error_term_){
+                                sq_buf[base * 2]     = sq_val.real();
+                                sq_buf[base * 2 + 1] = sq_val.imag();
+                            }
                         }
             }
 
-        H5Dwrite(ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
-        H5Dclose(ds);
+        H5Dwrite(sum_ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+        H5Dclose(sum_ds);
+
+        if (store_error_term_){
+            H5Dwrite(sum_sq_ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, sq_buf.data());
+            H5Dclose(sum_sq_ds);
+        }
+
         H5Sclose(sp);
     }
 

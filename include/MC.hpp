@@ -117,7 +117,8 @@ public:
 
     size_t local_Metropolis(double T, HeisenbergSpin* spin);
 
-    void overrelax_all(double p);
+    void overrelax_all();
+    void overrelax_some(double p);
     size_t sweep_local_Metropolis(double T);
 };
 

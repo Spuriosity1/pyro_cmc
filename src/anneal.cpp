@@ -74,7 +74,7 @@ int main (int argc, char *argv[]) {
         .help("Number of annealing steps")
         .default_value(static_cast<size_t>(100))
         .scan<'i', size_t>();
-    prog.add_argument("--n_sweep")
+    prog.add_argument("--n_sweep", "-w")
         .help("Number of sweeps to run per temperatur step")
         .default_value(static_cast<size_t>(16))
         .scan<'i', size_t>();
@@ -86,6 +86,9 @@ int main (int argc, char *argv[]) {
         .default_value(static_cast<size_t>(64))
         .help("Number of sweeps to run at T_cold while collecting statistics")
         .scan<'i', size_t>();
+    prog.add_argument("--store_intrinsic_var")
+        .default_value(false)
+        .implicit_value(true);
     prog.add_argument("--prefix")
         .default_value("run");
 
@@ -147,7 +150,8 @@ int main (int argc, char *argv[]) {
     name << prog.get<std::string>("--prefix")<<DELIM<<name_LJ123(prog)<<
         "B="<<B[0]<<","<<B[1]<<","<<B[2]<<DELIM<<
         "seed="<<seed_s<<DELIM<<
-        "Tc="<<T_cold<<DELIM;
+        "Tc="<<T_cold<<DELIM<<
+        "sw="<<n_sweep<<DELIM;
 
     printf("Burning in (%zu sweeps)...\n", n_burn_in);
     for (size_t i=0; i<n_burn_in; i++){
@@ -161,7 +165,8 @@ int main (int argc, char *argv[]) {
 
     printf("Done. Begin anneal...\n");
 
-    ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1);
+    bool store_intrinsic_var = prog.get<bool>("--store_intrinsic_var");
+    ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1, store_intrinsic_var);
 
     for (size_t i=0; i<T_grid.size(); ++i){
         T = T_grid[i];
