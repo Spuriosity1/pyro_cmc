@@ -11,7 +11,7 @@ latlib_dep = dependency('lattice_lib', version: '>= 2.2.0')
 
 fftw_dep = dependency('fftw3', required: true)
 
-hdf5_dep = dependency('hdf5', required: true, language: 'c')
+hdf5_dep = dependency('hdf5', required: true, language: 'cpp')
 
 cc=meson.get_compiler('c')
 
@@ -55,6 +55,13 @@ g_deps = [
 mc_lib = static_library('cmc_lib',
   files('src/MC.cpp'),
   dependencies: g_deps,
+  include_directories: CMC_inc
+  )
+
+fieldcool_bin = executable('fieldcool', 
+  files('src/fieldcool.cpp'),
+  dependencies: g_deps,
+  link_with: mc_lib,
   include_directories: CMC_inc
   )
 

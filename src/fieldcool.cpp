@@ -1,7 +1,7 @@
 #include <algorithm>
+#include "cli_bits.hpp"
 
 #include "MC.hpp"
-#include "cli_bits.hpp"
 #include "ssf_manager.hpp"
 #include "energy_manager.hpp"
 #include "pyrochlore_geometry.hpp"
@@ -53,21 +53,16 @@ int main (int argc, char *argv[]) {
         .implicit_value(true)
         .default_value(false);
 
-
     /// ANNEALING PROTOCOL
     prog.add_argument("--T_hot")
         .help("Temperature  to begin annealing from")
-        .scan<'g',double>();
-    prog.add_argument("--T_cold")
-        .help("Minimum temperature (defaults ti smallest T_sample)")
         .scan<'g',double>();
     prog.add_argument("--T_ref")
         .help("Reference temperature for proposal distribution")
         .default_value(1.0)
         .scan<'g',double>();
-    prog.add_argument("--T_sample")
+    prog.add_argument("--T_cold")
         .help("Final temperature")
-        .nargs(argparse::nargs_pattern::at_least_one)
         .required()
         .scan<'g',double>();
     prog.add_argument("--n_steps")
@@ -116,9 +111,7 @@ int main (int argc, char *argv[]) {
 
     const double T_hot = prog.is_used("--T_hot") ? 
         prog.get<double>("--T_hot") : 10;
-    const std::vector<double> T_sample = prog.get<std::vector<double>>("--T_sample");
-    double T_cold =prog.is_used("--T_cold") ? 
-        prog.get<double>("--T_cold") : *std::min_element(T_sample.begin(), T_sample.end());
+    const double T_cold = prog.get<double>("--T_cold");
 
     const size_t n_steps = prog.get<size_t>("--n_steps");
     const size_t n_sweep = prog.get<size_t>("--n_sweep");
@@ -149,22 +142,18 @@ int main (int argc, char *argv[]) {
         "seed="<<seed_s<<DELIM<<
         "Tc="<<T_cold<<DELIM;
 
+
     printf("Burning in (%zu sweeps)...\n", n_burn_in);
     for (size_t i=0; i<n_burn_in; i++){
         mc.sweep_local_Metropolis(T_hot);
     }
 
+    printf("Done. Begin anneal...\n");
+    const double factor = pow(T_cold / T_hot, 1./n_steps);
 
     energy_manager e_manager;
-    auto [T_grid, S_idx] = generate_T_profile(T_hot, T_cold, T_sample, n_steps);
 
-
-    printf("Done. Begin anneal...\n");
-
-    ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1);
-
-    for (size_t i=0; i<T_grid.size(); ++i){
-        T = T_grid[i];
+    for (size_t i=0; i <n_steps; i++){
         size_t accepted=0;
         e_manager.new_T(T);
         for (size_t n=0; n<n_sweep; n++){
@@ -173,24 +162,32 @@ int main (int argc, char *argv[]) {
         double e = mc.total_energy_per_unit_cell();
         e_manager.sample(e);
 
-        if (S_idx.contains(i)){
-            printf("Sampling at T=%lf (%zu sweeps)...\n", T, n_sample);
-            ssfm.new_T(T);
-            for (size_t i=0; i<n_sample; i++){
-                size_t accepted_ssf=0;
-                for (size_t n=0; n<n_sweep; n++){
-                    accepted_ssf += mc.sweep_local_Metropolis(T);
-                }
-                printf("[ssf] Iter %4zu T=%.3e Acceptance rate: %.2f%%\n", 
-                        i, T, accepted_ssf*100.0/lat.get_objects<HeisenbergSpin>().size()/n_sweep);
-                ssfm.sample();
-            }
-        }
-
         double E = e_manager.curr_E();
-        printf("[anneal] Iter %4zu T=%.3e E=%3e Acceptance rate: %.2f%%\n", 
+        printf("Iter %4zu T=%.3e E=%3e Acceptance rate: %.2f%%\n", 
                 i, T, E, accepted*100.0/lat.get_objects<HeisenbergSpin>().size()/n_sweep);
+        T *= factor;
+    }
 
+    ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1);
+    ssfm.new_T(T);
+
+    printf("Releasing field and re-burning (%zu sweeps)...\n",n_burn_in);
+
+
+    mc.set_global_field({0,0,0});
+    for (size_t n=0; n<n_burn_in; n++){
+        mc.sweep_local_Metropolis(T);
+    }
+
+    printf("Sampling at T=%lf (%zu sweeps)...\n", T, n_sample);
+    for (size_t i=0; i<n_sample; i++){
+        size_t accepted=0;
+        for (size_t n=0; n<n_sweep; n++){
+            accepted += mc.sweep_local_Metropolis(T);
+        }
+        printf("[cold] Iter %4zu T=%.3e Acceptance rate: %.2f%%\n", 
+                i, T, accepted*100.0/lat.get_objects<HeisenbergSpin>().size()/n_sweep);
+        ssfm.sample();
     }
 
     auto file_path = outdir/( name.str() + ".out.h5");

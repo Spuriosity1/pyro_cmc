@@ -1,6 +1,7 @@
 #pragma once
 #include "format_bits.hpp"
 #include "vec3.hpp"
+#include <algorithm>
 #include <argparse.hpp>
 #include <cmath>
 #include <filesystem>
@@ -92,8 +93,11 @@ inline double resolve_J3(const argparse::ArgumentParser& prog) {
     if (has_Qz) {
         int    L  = prog.get<int>("L");
         double Qz = round_Qz_to_supercell(prog.get<double>("--Qz"), L);
-        double J2 = prog.get<double>("--J2");
-        return J3_from_Qz(J2, Qz);
+        double J1 = prog.get<double>("--J1");
+        double J2_eff = prog.get<double>("--J2") / std::abs(J1);
+        double J3 = J3_from_Qz(J2_eff, Qz) * std::abs(J1);
+        std::cout<<"Calculated J3="<<J3<<std::endl;
+        return J3;
     }
     return prog.get<double>("--J3");
 }
@@ -208,5 +212,37 @@ inline auto name_LJ123(const argparse::ArgumentParser& prog){
     return name.str();
 }
 
+// Generates a log-spaced array from T_hot to min(T_sample), making sure to
+// include all of the T_sample steps exactly in sorted order.
+// Returns also the 
+inline std::pair<std::vector<double>, std::set<size_t>> generate_T_profile(
+        double T_hot, double T_cold, const std::vector<double>& T_sample_unsorted, size_t total_steps){
+    std::vector<double> T;
+    std::set<size_t> idx;
+    auto T_sample(T_sample_unsorted);
+    // sort descending
+    std::sort(T_sample.begin(),T_sample.end(), [](double a, double b){return a>b;});
+   
+    const double factor = pow(T_cold / T_hot, 1./total_steps);
+
+    double t = T_hot/factor;
+    size_t i_samp=0; // T_sample_copy[0] is biggest
+                     //
+    total_steps += T_sample.size();
+    for (size_t i=0; i<total_steps; i++){
+        if (t < T_sample[i_samp]){
+            t=T_sample[i_samp]; 
+            idx.insert(i);
+            i_samp++;
+        } else {
+            t *= factor;
+        }
+
+        T.push_back(t);
+    }
+
+    return {T, idx};
+
+}
 
 

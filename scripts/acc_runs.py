@@ -6,9 +6,9 @@ import os.path
 import numpy as np
 import h5py
 
-# Usage: acc_heat_capacity L=8_J1=..._seed=<hex>_T_c=<val>_.out.h5 ...
+# Usage: acc_heat_capacity L=8_J1=..._seed=<hex>_Tc=<val>_.out.h5 ...
 #
-# All input files must share the same L, J1, J2, J3, T_c (differ only in seed).
+# All input files must share the same L, J1, J2, J3, Tc (differ only in seed).
 # Merges across seeds and computes the cross-seed variance of the energy
 # per primitive cell, e = E_total / N_primitive_cells.
 #
@@ -84,7 +84,7 @@ _COMPATIBLE_TAGS = {
     "J1":  (r"J1=([-\d.e+]+)_",       float),
     "J2":  (r"J2=([-\d.e+]+)_",       float),
     "J3":  (r"J3=([-\d.e+]+)_",       float),
-    "T_c": (r"T_c=([-\d.e+]+)_",      float),
+    "Tc": (r"Tc=([-\d.e+]+)_",      float),
 }
 
 
