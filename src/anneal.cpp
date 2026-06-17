@@ -87,9 +87,6 @@ int main (int argc, char *argv[]) {
         .default_value(static_cast<size_t>(64))
         .help("Number of sweeps to run at T_cold while collecting statistics")
         .scan<'i', size_t>();
-    prog.add_argument("--store_intrinsic_var")
-        .default_value(false)
-        .implicit_value(true);
     prog.add_argument("--prefix")
         .default_value("run");
 
@@ -165,8 +162,7 @@ int main (int argc, char *argv[]) {
 
     printf("Done. Begin anneal...\n");
 
-    bool store_intrinsic_var = prog.get<bool>("--store_intrinsic_var");
-    ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1, store_intrinsic_var);
+    ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1, true);
 
     for (size_t i=0; i<T_grid.size(); ++i){
         T = T_grid[i];
