@@ -73,7 +73,7 @@ namespace CMC {
 
 
     void accumulate_field(vector3::vec3d& h,
-            const std::vector<HeisenbergSpin*> spin_list){
+            const std::vector<HeisenbergSpin*>& spin_list){
         for (auto& s : spin_list) {h += s->S;}
     }
 
