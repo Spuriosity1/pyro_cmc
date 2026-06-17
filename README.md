@@ -48,7 +48,7 @@ anneal -o <output_dir> -s <hex_seed> L <int>
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-o / --output_dir` | required | Directory for output files |
-| `-s / --seed` | required | 64-bit hex RNG seed (e.g. `0xdeadbeef`) |
+| `-s / --seed` | required | RNG seed index (integer) |
 | `L` | required | Supercell linear dimension; total spins = 4L³ × 4 |
 | `--J1` | required | Nearest-neighbour coupling |
 | `--J2` | 0 | Second-neighbour coupling |

@@ -9,6 +9,7 @@
 #include <ostream>
 
 #include "vec3.hpp"
+#include "random_seeds.hpp"
 #include "pyrochlore_geometry.hpp"
 
 
@@ -118,6 +119,14 @@ inline auto build_pyro_lat(const argparse::ArgumentParser& prog){
     return build_supercell(cell_spec, supercell_spec);
 }
 
+inline uint64_t hash_true_random(uint64_t seed_id){
+    if (seed_id > true_random_cache.size()){
+        throw std::runtime_error("Cannot read: there are only "+std::to_string(true_random_cache.size())+"seeds");
+    }
+    return true_random_cache[seed_id];
+}
+
+
 inline auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& lat, uint64_t seed){
 
     vector3::vec3d global_field;
@@ -139,7 +148,7 @@ inline auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& l
 
     auto Delta = prog.get<double>("--Delta");
 
-    CMC::MC_runner mc(lat, seed);
+    CMC::MC_runner mc(lat, hash_true_random(seed));
 
     // J1 as six sublattice-pair specs for local-frame XXZ.
     // For pair (mu, nu) with mu < nu, J_spec = J1 * [I + (Delta-1) * z_nu ⊗ z_mu].

@@ -42,7 +42,8 @@ int main (int argc, char *argv[]) {
 
     prog.add_argument("--seed", "-s")
         .required()
-        .help("64-bit int to seed the RNG");
+        .help("64-bit int to seed the RNG")
+        .scan<'i', size_t>();
 
     prog.add_argument("--save_state")
         .implicit_value(true)
@@ -107,7 +108,7 @@ int main (int argc, char *argv[]) {
     }
 
     
-    std::string seed_s = prog.get<std::string>("--seed");
+    size_t seed = prog.get<size_t>("--seed");
 
     const double T_hot = prog.is_used("--T_hot") ? 
         prog.get<double>("--T_hot") : 10;
@@ -121,7 +122,7 @@ int main (int argc, char *argv[]) {
     double T = T_hot;
 
     auto lat = build_pyro_lat(prog);
-    auto mc = build_J1J2J3_h(prog, lat, int_from_hex_str(seed_s));
+    auto mc = build_J1J2J3_h(prog, lat, seed);
 
     if (prog.get<bool>("--init_spiral")) {
         if (!prog.is_used("--Qz"))
@@ -139,7 +140,7 @@ int main (int argc, char *argv[]) {
     std::stringstream name; // accumulates hashed options
     name << prog.get<std::string>("--prefix")<<DELIM<<name_LJ123(prog)<<
         "B="<<B[0]<<","<<B[1]<<","<<B[2]<<DELIM<<
-        "seed="<<seed_s<<DELIM<<
+        "seed="<<seed<<DELIM<<
         "Tc="<<T_cold<<DELIM;
 
 
