@@ -147,6 +147,7 @@ def main():
                         "intra as a faint wide band behind the solid inter-seed bars")
     p.add_argument("--vmin", type=float, default=None)
     p.add_argument("--vmax", type=float, default=None)
+    p.add_argument("--override_slpos", action="store_true")
     p.add_argument("-o", "--output", default=None,
                    help="Save figure to file instead of displaying")
     args = p.parse_args()
@@ -205,6 +206,14 @@ def main():
 
         (_, _, _, _, _, _,
          corr, corr_lookup, sl_positions, k_dims, n_spins, _, n_ssf) = load_file(fpath)
+
+        if args.override_slpos:
+            sl_positions = np.array([[0,0,0],[0,0,0],[0,0,0],[0,0,0],
+                                     [0,4,4],[0,4,4],[0,4,4],[0,4,4],
+                                     [4,0,4],[4,0,4],[4,0,4],[4,0,4],
+                                     [4,4,0],[4,4,0],[4,4,0],[4,4,0]
+                                     ])
+
 
         n_T = corr.shape[1]
         t_idx = args.t_index if args.t_index is not None else n_T - 1

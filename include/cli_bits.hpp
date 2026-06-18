@@ -40,13 +40,18 @@ inline auto declare_LJ123(argparse::ArgumentParser& prog){
         .default_value(0.)
         .scan<'g', double>();
     prog.add_argument("--J3")
-        .help("Third-nearest-neighbour Heisenberg coupling strength (mutually exclusive with --Qz)")
+        .help("Third-nearest-neighbour Heisenberg coupling strength (mutually exclusive with --Q)")
         .default_value(0.)
         .scan<'g', double>();
-    prog.add_argument("--Qz")
-        .help("Spiral wavevector z-component in units of 2pi/a_cubic; J3 is set to minimise spiral energy "
+    prog.add_argument("--Q")
+        .help("Nonzero spiral wavevector component in units of 2pi/a_cubic; J3 is set to minimise spiral energy "
               "(mutually exclusive with --J3). Rounded to nearest supercell-commensurate value.")
         .scan<'g', double>();
+    prog.add_argument("--spiral_axis", "-x")
+        .help("Axis [0,1,2] (x,y,z) that the spiral wavevector --Q points along")
+        .choices(0,1,2)
+        .default_value(2)
+        .scan<'i', int>();
     prog.add_argument("--Delta")
         .help("Nearest-neighbour XXZ anisotropy (local [111] frame): Jz = Delta*J1, Jperp = J1. "
               "Delta=1 is isotropic Heisenberg.")
@@ -85,15 +90,15 @@ inline void warn_Qz_rounding(double Qz, double Qz_rounded) {
     }
 }
 
-// Extract the effective J3 from the parsed arguments, handling --Qz or --J3.
+// Extract the effective J3 from the parsed arguments, handling --Q or --J3.
 inline double resolve_J3(const argparse::ArgumentParser& prog) {
     bool has_J3 = prog.is_used("--J3");
-    bool has_Qz = prog.is_used("--Qz");
-    if (has_J3 && has_Qz)
-        throw std::runtime_error("--J3 and --Qz are mutually exclusive");
-    if (has_Qz) {
+    bool has_Q = prog.is_used("--Q");
+    if (has_J3 && has_Q)
+        throw std::runtime_error("--J3 and --Q are mutually exclusive");
+    if (has_Q) {
         int    L  = prog.get<int>("L");
-        double Qz = round_Qz_to_supercell(prog.get<double>("--Qz"), L);
+        double Qz = round_Qz_to_supercell(prog.get<double>("--Q"), L);
         double J1 = prog.get<double>("--J1");
         double J2_eff = prog.get<double>("--J2") / std::abs(J1);
         double J3 = J3_from_Qz(J2_eff, Qz) * std::abs(J1);
@@ -138,12 +143,13 @@ inline auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& l
     auto J1 = prog.get<double>("--J1");
     auto J2 = prog.get<double>("--J2");
     auto J3 = resolve_J3(prog);
-    if (prog.is_used("--Qz")) {
+    if (prog.is_used("--Q")) {
         int    L          = prog.get<int>("L");
-        double Qz         = prog.get<double>("--Qz");
+        double Qz         = prog.get<double>("--Q");
         double Qz_rounded = round_Qz_to_supercell(Qz, L);
         warn_Qz_rounding(Qz, Qz_rounded);
-        printf("Using Qz=%.10g -> J3=%.10g\n", Qz_rounded, J3);
+        int axis = prog.get<int>("--spiral_axis");
+        printf("Using Q=%.10g along axis %d -> J3=%.10g\n", Qz_rounded, axis, J3);
     }
 
     auto Delta = prog.get<double>("--Delta");
@@ -191,13 +197,18 @@ inline auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& l
     return mc;
 }
 
-// Initialise all spins to a spiral with wavevector Q = (0,0,Qz) (Qz in units of
-// 2pi/a_cubic). Spins rotate in the yz-plane: S = (0, cos(phi), sin(phi)).
-inline void init_spiral_state(CMC::Lattice& lat, double Qz_rounded) {
+// Initialise all spins to a spiral with wavevector Q along the given axis
+// (0=x, 1=y, 2=z; Q_rounded in units of 2pi/a_cubic). Spins rotate in the plane normal to Q.
+inline void init_spiral_state(CMC::Lattice& lat, double Q_rounded, int axis) {
     constexpr double a_cubic = 8.;
+    int idx_sin = (axis + 1) % 3;
+    int idx_cos = (axis + 2) % 3;
     for (auto& s : lat.get_objects<CMC::HeisenbergSpin>()) {
-        double phase = Qz_rounded * 2 * M_PI * static_cast<double>(s.ipos[2]) / a_cubic;
-        s.S = {0., std::cos(phase), std::sin(phase)};
+        double phase = Q_rounded * 2 * M_PI * static_cast<double>(s.ipos[axis]) / a_cubic;
+        vector3::vec3d S(0., 0., 0.);
+        S[idx_cos] = std::cos(phase);
+        S[idx_sin] = std::sin(phase);
+        s.S = S;
     }
 }
 
@@ -214,9 +225,12 @@ inline auto name_LJ123(const argparse::ArgumentParser& prog){
         "J2="<<J2<<DELIM<<
         "J3="<<J3<<DELIM<<
         "Delta="<<Delta<<DELIM;
-    if (prog.is_used("--Qz")) {
-        double Qz_rounded = round_Qz_to_supercell(prog.get<double>("--Qz"), L);
+    if (prog.is_used("--Q")) {
+        double Qz_rounded = round_Qz_to_supercell(prog.get<double>("--Q"), L);
         name << "Qz="<<Qz_rounded<<DELIM;
+        int axis = prog.get<int>("--spiral_axis");
+        if (axis != 2)
+            name << "spiral_axis="<<axis<<DELIM;
     }
     return name.str();
 }

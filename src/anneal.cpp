@@ -50,7 +50,7 @@ int main (int argc, char *argv[]) {
         .default_value(false);
 
     prog.add_argument("--init_spiral")
-        .help("Pre-initialise spins to a spiral with the wavevector given by --Qz (requires --Qz)")
+        .help("Pre-initialise spins to a spiral with the wavevector given by --Q (requires --Q)")
         .implicit_value(true)
         .default_value(false);
 
@@ -131,11 +131,12 @@ int main (int argc, char *argv[]) {
     auto mc = build_J1J2J3_h(prog, lat, seed);
 
     if (prog.get<bool>("--init_spiral")) {
-        if (!prog.is_used("--Qz"))
-            throw runtime_error("--init_spiral requires --Qz");
-        double Qz_rounded = round_Qz_to_supercell(prog.get<double>("--Qz"), prog.get<int>("L"));
-        printf("Pre-initialising to spiral order (Qz=%.10g)...\n", Qz_rounded);
-        init_spiral_state(lat, Qz_rounded);
+        if (!prog.is_used("--Q"))
+            throw runtime_error("--init_spiral requires --Q");
+        double Q_rounded = round_Qz_to_supercell(prog.get<double>("--Q"), prog.get<int>("L"));
+        int spiral_axis = prog.get<int>("--spiral_axis");
+        printf("Pre-initialising to spiral order (Q=%.10g, axis=%d)...\n", Q_rounded, spiral_axis);
+        init_spiral_state(lat, Q_rounded, spiral_axis);
     }
 
     auto B = prog.get<std::vector<double>>("-B");
