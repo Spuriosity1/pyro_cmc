@@ -227,7 +227,7 @@ inline auto name_LJ123(const argparse::ArgumentParser& prog){
         "Delta="<<Delta<<DELIM;
     if (prog.is_used("--Q")) {
         double Qz_rounded = round_Qz_to_supercell(prog.get<double>("--Q"), L);
-        name << "Qz="<<Qz_rounded<<DELIM;
+        name << "Q="<<Qz_rounded<<DELIM;
         int axis = prog.get<int>("--spiral_axis");
         if (axis != 2)
             name << "spiral_axis="<<axis<<DELIM;

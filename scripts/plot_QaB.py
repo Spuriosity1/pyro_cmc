@@ -205,7 +205,7 @@ def main():
         qz = float(qz_str)
 
         (_, _, _, _, _, _,
-         corr, corr_lookup, sl_positions, k_dims, n_spins, _, n_ssf) = load_file(fpath)
+         corr, corr_lookup, sl_positions, k_dims, n_spins, ssf_T, n_ssf) = load_file(fpath)
 
         if args.override_slpos:
             sl_positions = np.array([[0,0,0],[0,0,0],[0,0,0],[0,0,0],
@@ -327,7 +327,8 @@ def main():
             ax.set_ylim(args.vmin, args.vmax)
 
     fixed_str = "  ".join(f"{k}={v}" for k, v in fixed.items())
-    suptitle = r"$S(\mathbf{q})$ at symmetry-equivalent wavevectors"
+
+    suptitle = r"$S(\mathbf{q})$ at symmetry-equivalent wavevectors, T="+str(ssf_T[t_idx])
     if fixed_str:
         suptitle += f"\n{fixed_str}"
     fig.suptitle(suptitle)

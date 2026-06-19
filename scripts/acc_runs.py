@@ -2,20 +2,30 @@
 
 import re
 import sys
-import os.path
+import os
+import glob
+import argparse
+from collections import defaultdict
+
 import numpy as np
 import h5py
 
-# Usage: acc_heat_capacity L=8_J1=..._seed=<hex>_Tc=<val>_.out.h5 ...
+# Usage: acc_runs.py <dir_or_file> [<dir_or_file> ...]
 #
-# All input files must share the same L, J1, J2, J3, Tc (differ only in seed).
-# Merges across seeds and computes the cross-seed variance of the energy
-# per primitive cell, e = E_total / N_primitive_cells.
+# Walks the given directories (and/or individual files), collects every
+# *.out.h5 run file it finds, and groups them by their filename tags
+# (key=value segments, e.g. "L=8", "J1=1.0", "spiral_axis=2") ignoring
+# "seed" — runs that agree on every other tag are assumed to be repeats of
+# the same physical run with different RNG seeds. Each group is merged
+# across seeds and the cross-seed variance of the energy per primitive
+# cell, e = E_total / N_primitive_cells, is computed.
 #
 # Assumes all seeds use identical --n_sample (uniform n_per_seed per temperature).
 #
-# Writes:
-#   <params>_mergeK_.avg.h5  — merged over K seeds
+# Writes one <params>_mergeK_.avg.h5 per group (merged over K seeds), into
+# the same directory as the source files. Any pre-existing *.avg.h5 files
+# found among the given paths are flagged and, with confirmation, deleted
+# before new merges are written.
 #
 # Datasets in /energy:
 #   T_list    — temperature grid
@@ -89,38 +99,52 @@ def load_ssf_raw(fname):
 
     return T, corr_lookup, n_samples, sl_pos, static_corr, static_corr_2, attrs
 
-_COMPATIBLE_TAGS = {
-    "L":   (r"L=(\d+)_",              int),
-    "J1":  (r"J1=([-\d.e+]+)_",       float),
-    "J2":  (r"J2=([-\d.e+]+)_",       float),
-    "J3":  (r"J3=([-\d.e+]+)_",       float),
-    "Tc": (r"Tc=([-\d.e+]+)_",      float),
-}
+# key=value segments in run filenames. Keys are normally a single
+# identifier word ("L", "J1", "Tc", ...), but "spiral_axis" is the one
+# multi-word exception emitted by cli_bits.hpp, so it's special-cased here.
+# Values never contain "_" (that's the segment separator), so a value runs
+# up to the next "_" (or end of string).
+_TAG_RE = re.compile(r"(spiral_axis|[A-Za-z][A-Za-z0-9]*)=([^_]*)")
 
 
 def parse_tags(fname):
+    """Parse all key=value tags present in a run filename into a dict of
+    raw strings. Free text that isn't part of a key=value pair (e.g. the
+    user-supplied --prefix) is ignored."""
     base = os.path.basename(fname)
-    tags = {}
-    for name, (pattern, cast) in _COMPATIBLE_TAGS.items():
-        m = re.search(pattern, base)
-        if m is None:
-            raise ValueError(f"No {name}=<val> tag in: {base}")
-        tags[name] = cast(m.group(1))
+    base = re.sub(r"\.(out|avg)\.h5$", "", base)
+    tags = {m.group(1): m.group(2) for m in _TAG_RE.finditer(base)}
     return tags
 
-def check_compatibility(fnames):
-    ref = parse_tags(fnames[0])
-    for fname in fnames[1:]:
+
+def _normalize(value):
+    """Numeric tags should compare equal regardless of formatting
+    (e.g. "0.10" vs "0.1"); everything else compares as a raw string."""
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def group_key(tags, ignore=("seed",)):
+    """A hashable key identifying runs that differ only in `ignore` tags."""
+    return tuple(sorted(
+        (k, _normalize(v)) for k, v in tags.items() if k not in ignore
+    ))
+
+
+def group_runs(fnames):
+    """Group run files by their non-seed tags. Files without a seed= tag
+    are skipped (they're not seed-repeated runs)."""
+    groups = defaultdict(list)
+    for fname in fnames:
         tags = parse_tags(fname)
-        mismatches = [
-            f"{k}: {ref[k]} vs {tags[k]}"
-            for k in ref if ref[k] != tags[k]
-        ]
-        if mismatches:
-            raise ValueError(
-                f"Incompatible tags in {os.path.basename(fname)}: "
-                + ", ".join(mismatches)
-            )
+        if "seed" not in tags:
+            print(f"Warning: no seed= tag in {os.path.basename(fname)}, skipping",
+                  file=sys.stderr)
+            continue
+        groups[group_key(tags)].append(fname)
+    return groups
 
 
 def merged_name(representative_file, n_seeds):
