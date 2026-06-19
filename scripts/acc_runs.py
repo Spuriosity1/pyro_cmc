@@ -157,14 +157,9 @@ def merged_name(representative_file, n_seeds):
     return os.path.join(os.path.dirname(representative_file), out)
 
 
-def main(fnames):
-    if not fnames:
-        print("Usage: acc_heat_capacity L=8_J1=..._seed=<hex>_T_c=<val>_.out.h5 ...")
-        sys.exit(1)
-
-    check_compatibility(fnames)
-    tags = parse_tags(fnames[0])
-
+def merge_group(fnames):
+    """Merge one group of seed-repeated run files into a single .avg.h5.
+    Returns the output path."""
     T_ref    = None
     E_total  = None
     E2_total = None
@@ -297,6 +292,67 @@ def main(fnames):
             sg.attrs[k] = v
 
     print(f"{K} seed(s) merged → {out}")
+    return out
+
+
+def collect_inputs(paths):
+    """Split given paths (directories and/or files) into the set of
+    *.out.h5 run files and *.avg.h5 files found among them."""
+    out_files = set()
+    avg_files = set()
+    for p in paths:
+        if os.path.isdir(p):
+            out_files.update(glob.glob(os.path.join(p, "*.out.h5")))
+            avg_files.update(glob.glob(os.path.join(p, "*.avg.h5")))
+        elif p.endswith(".out.h5"):
+            out_files.add(p)
+        elif p.endswith(".avg.h5"):
+            avg_files.add(p)
+        else:
+            print(f"Warning: ignoring unrecognized path: {p}", file=sys.stderr)
+    return sorted(out_files), sorted(avg_files)
+
+
+def prompt_delete_avg_files(avg_files):
+    if not avg_files:
+        return
+    print(f"Found {len(avg_files)} pre-existing .avg.h5 file(s):")
+    for f in avg_files:
+        print(f"  {f}")
+    reply = input("Delete these before regenerating? [y/N] ").strip().lower()
+    if reply in ("y", "yes"):
+        for f in avg_files:
+            os.remove(f)
+        print(f"Deleted {len(avg_files)} file(s).")
+    else:
+        print("Leaving pre-existing .avg.h5 files in place.")
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(
+        description="Accumulate seed-repeated run files into per-parameter "
+                     ".avg.h5 files."
+    )
+    parser.add_argument("paths", nargs="+",
+                         help="Directories and/or .out.h5 files to process")
+    args = parser.parse_args(argv)
+
+    out_files, avg_files = collect_inputs(args.paths)
+
+    prompt_delete_avg_files(avg_files)
+
+    if not out_files:
+        print("No .out.h5 files found.", file=sys.stderr)
+        sys.exit(1)
+
+    groups = group_runs(out_files)
+    if not groups:
+        print("No seed-tagged run files to merge.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Found {len(out_files)} run file(s) in {len(groups)} group(s).")
+    for fnames in groups.values():
+        merge_group(sorted(fnames))
 
 
 if __name__ == "__main__":
