@@ -142,6 +142,12 @@ public:
         for (auto& v : corr_sq_) v.reserve(n_temperatures_reserve);
     }
 
+    void point_at(CMC::Lattice& sc2){
+        if (ft_x_) ft_x_->point_at(sc2);
+        if (ft_y_) ft_y_->point_at(sc2);
+        if (ft_z_) ft_z_->point_at(sc2);
+    }
+
     // Fourier-transform the current spin configuration and accumulate C^{αβ}_{μν}(q).
     void sample() {
         assert(!T_list.empty());

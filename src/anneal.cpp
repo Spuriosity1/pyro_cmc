@@ -151,19 +151,18 @@ int main (int argc, char *argv[]) {
         "Tc="<<T_cold<<DELIM<<
         "sw="<<n_sweep<<DELIM;
 
+
+    auto [T_grid, S_idx] = generate_T_profile(T_hot, T_cold, T_sample, n_steps);
+    energy_manager e_manager;
+    ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1, true);
+
+    printf("Done. Begin anneal...\n");
+
+
     printf("Burning in (%zu sweeps)...\n", n_burn_in);
     for (size_t i=0; i<n_burn_in; i++){
         mc.sweep_local_Metropolis(T_hot);
     }
-
-
-    energy_manager e_manager;
-    auto [T_grid, S_idx] = generate_T_profile(T_hot, T_cold, T_sample, n_steps);
-
-
-    printf("Done. Begin anneal...\n");
-
-    ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1, true);
 
     for (size_t i=0; i<T_grid.size(); ++i){
         T = T_grid[i];

@@ -83,7 +83,7 @@ class MC_runner {
 
     vector3::vec3<double> global_field={0,0,0};
 
-    Lattice& lat;
+    Lattice* lat;
 
     std::uniform_int_distribution<size_t> site_dist;
     std::normal_distribution<double> normal_dist;
@@ -97,11 +97,16 @@ public:
     MC_parameters settings;
 
     MC_runner(Lattice &lat_, size_t seed)
-        : lat(lat_),
-          site_dist(0, lat.get_objects<HeisenbergSpin>().size()-1),
+        : lat(&lat_),
+          site_dist(0, lat_.get_objects<HeisenbergSpin>().size()-1),
           rand01(0,1),
           rng(seed)
     {}
+
+    // Repoints this runner at a different (but congruent) Lattice — O(1), no
+    // spin data copied. Used by parallel tempering to swap which replica's
+    // configuration a given temperature slot is currently simulating.
+    void rebind(Lattice& new_lat);
 
     double total_energy_per_unit_cell() const;
 

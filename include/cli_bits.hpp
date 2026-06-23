@@ -239,30 +239,41 @@ inline auto name_LJ123(const argparse::ArgumentParser& prog){
 // include all of the T_sample steps exactly in sorted order.
 // Returns also the 
 inline std::pair<std::vector<double>, std::set<size_t>> generate_T_profile(
-        double T_hot, double T_cold, const std::vector<double>& T_sample_unsorted, size_t total_steps){
-    std::vector<double> T;
-    std::set<size_t> idx;
-    auto T_sample(T_sample_unsorted);
-    // sort descending
-    std::sort(T_sample.begin(),T_sample.end(), [](double a, double b){return a>b;});
-   
+        double T_hot, double T_cold,
+        std::vector<double> T_sample, size_t total_steps){
+    std::vector<double> T_sweep, T;
     const double factor = pow(T_cold / T_hot, 1./total_steps);
-
     double t = T_hot/factor;
-    size_t i_samp=0; // T_sample_copy[0] is biggest
-                     //
-    total_steps += T_sample.size();
     for (size_t i=0; i<total_steps; i++){
-        if (t < T_sample[i_samp]){
-            t=T_sample[i_samp]; 
-            idx.insert(i);
-            i_samp++;
-        } else {
-            t *= factor;
-        }
-
-        T.push_back(t);
+        t *= factor;
+        T_sweep.push_back(t);
     }
+
+    // sort both descending
+    std::sort(T_sweep.begin(),T_sweep.end(), [](double a, double b){return a>b;}); 
+    std::sort(T_sample.begin(),T_sample.end(), [](double a, double b){return a>b;}); 
+    
+    size_t i_samp=0;
+    size_t i_sw=0;
+
+    std::set<size_t> idx;
+    while(i_sw < T_sweep.size() && i_samp < T_sample.size()){
+        if (T_sweep[i_sw] > T_sample[i_samp]){
+            T.push_back(T_sweep[i_sw]); i_sw++;
+        } else {
+            idx.insert(T.size());
+            T.push_back(T_sample[i_samp]); i_samp++;
+        }
+    }
+    
+    // exhaust any tails
+    for (; i_samp < T_sample.size(); i_samp++){
+        idx.insert(T.size());
+        T.push_back(T_sample[i_samp]);
+    }
+    for (; i_sw < T_sweep.size(); i_sw++)
+        T.push_back(T_sweep[i_sw]);
+
 
     return {T, idx};
 

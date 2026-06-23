@@ -5,46 +5,46 @@
 #include "H5Gpublic.h"
 #include "H5Ipublic.h"
 #include "H5Ppublic.h"
+#include "abstract_manager.hpp"
 #include <cassert>
 #include <filesystem>
 #include <vector>
 
 
-class energy_manager {
+// Per-temperature energy accumulator. T_list/n_samples/new_T/set_T are
+// inherited from abstract_manager: set_T() lets a single instance accumulate
+// samples for several interleaved temperatures (e.g. parallel tempering
+// slots that get visited in any order across rounds), not just one
+// sequentially-advancing temperature.
+class energy_manager : public abstract_manager {
     std::vector<double> E;
     std::vector<double> E2;
-    std::vector<double> T_list;
-    std::vector<size_t> n_samples;
+
+    void on_new_temp() override {
+        E.push_back(0);
+        E2.push_back(0);
+    }
 
     public:
     energy_manager(size_t n_temperatures_reserve=0) {
         E.reserve(n_temperatures_reserve);
         E2.reserve(n_temperatures_reserve);
-        T_list.reserve(n_temperatures_reserve);
-        n_samples.reserve(n_temperatures_reserve);
-    }
-
-    void new_T(double T){
-        E.push_back(0);
-        E2.push_back(0);
-        n_samples.push_back(0);
-        T_list.push_back(T);
     }
 
     double curr_E() const {
-        return E.back() / n_samples.back();
+        return E[curr_idx] / n_samples[curr_idx];
     }
-        
+
     void sample(double _e){
         assert(!T_list.empty());
 
-        E.back() += _e;
-        E2.back() += (_e*_e);
-        n_samples.back()++;
+        E[curr_idx] += _e;
+        E2[curr_idx] += (_e*_e);
+        n_samples[curr_idx]++;
     }
 
     void save(const std::filesystem::path& file_path);
-    void write_group(hid_t file_id, const char* group_name="/energy");
+    void write_group(hid_t file_id, const char* group_name="/energy") override;
 };
 
 
@@ -57,7 +57,7 @@ inline void energy_manager::save(const std::filesystem::path& file_path){
         throw std::runtime_error("Failed to create HDF5 file: " + file_path.string());
     }
     write_group(file_id);
-   
+
     // Close groups and file
     H5Fclose(file_id);
 }
@@ -113,4 +113,3 @@ inline void energy_manager::write_group(hid_t file_id, const char* group_name){
     H5Sclose(dataspace_id);
     H5Gclose(data_group);
 }
-

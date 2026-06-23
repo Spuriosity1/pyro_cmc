@@ -7,7 +7,7 @@ project('spiral_anneal_CMC', ['cpp', 'c'],
 
 json_dep = dependency('nlohmann_json', required: true)
 
-latlib_dep = dependency('lattice_lib', version: '>= 2.2.0')
+latlib_dep = dependency('lattice_lib', version: '>= 2.3.0')
 
 fftw_dep = dependency('fftw3', required: true)
 
@@ -60,6 +60,13 @@ mc_lib = static_library('cmc_lib',
 
 fieldcool_bin = executable('fieldcool', 
   files('src/fieldcool.cpp'),
+  dependencies: g_deps,
+  link_with: mc_lib,
+  include_directories: CMC_inc
+  )
+
+temper_bin = executable('temper', 
+  files('src/temper.cpp'),
   dependencies: g_deps,
   link_with: mc_lib,
   include_directories: CMC_inc

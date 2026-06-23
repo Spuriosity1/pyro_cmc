@@ -14,12 +14,12 @@ namespace CMC {
     void MC_runner::setup_lattice(){
         int coup_idx = 0;
         for (const auto& c : coupling_specs){
-            std::cout << "Coupling Index " << coup_idx++ << " -> linking\n";
+            // std::cout << "Coupling Index " << coup_idx++ << " -> linking\n";
 
-            auto& spins = lat.get_objects<HeisenbergSpin>();
-            const int Np = lat.lattice.num_primitive_cells();
+            auto& spins = lat->get_objects<HeisenbergSpin>();
+            const int Np = lat->lattice.num_primitive_cells();
             const int num_sl = static_cast<int>(
-                std::get<SlPos<HeisenbergSpin>>(lat.sl_positions).size());
+                std::get<SlPos<HeisenbergSpin>>(lat->sl_positions).size());
 
             for (int sl = 0; sl < num_sl; sl++) {
                 // pyrochlore sublattice 0-3 determined by position within FCC site
@@ -33,7 +33,7 @@ namespace CMC {
 
                     for (const auto& v : c.relative_vectors.at(pyro_sl)) {
                         HeisenbergSpin* other =
-                            lat.get_object_at<HeisenbergSpin>(link->ipos + v);
+                            lat->get_object_at<HeisenbergSpin>(link->ipos + v);
                         bool above = other < link;
                         if (above) {
                             shell_above.push_back(other);
@@ -134,7 +134,7 @@ namespace CMC {
 
     // overrelaxes proportion p of the spins
     void MC_runner::overrelax_some(double p){
-        auto& spins = lat.get_objects<HeisenbergSpin>();
+        auto& spins = lat->get_objects<HeisenbergSpin>();
 
         for (int i=0; i<p*spins.size(); ++i) {
             auto* spin = &spins[site_dist(rng)];
@@ -146,7 +146,7 @@ namespace CMC {
 
     // overrelaxes proportion p of the spins
     void MC_runner::overrelax_all(){
-        auto& spins = lat.get_objects<HeisenbergSpin>();
+        auto& spins = lat->get_objects<HeisenbergSpin>();
 
         for (size_t i=0; i<spins.size(); ++i) {
             auto* spin = &spins[i];
@@ -157,7 +157,7 @@ namespace CMC {
 
     size_t MC_runner::sweep_local_Metropolis(double T){
         size_t accepted = 0;
-        for (auto& spin : lat.get_objects<HeisenbergSpin>()){
+        for (auto& spin : lat->get_objects<HeisenbergSpin>()){
             accepted += local_Metropolis(T, &spin);
         }
         overrelax_all();
@@ -166,11 +166,17 @@ namespace CMC {
 
     double MC_runner::total_energy_per_unit_cell() const{
         double E = 0;
-        for (const auto& s : std::get<std::vector<HeisenbergSpin>>(lat.objects)){
+        for (const auto& s : std::get<std::vector<HeisenbergSpin>>(lat->objects)){
             E += 0.5 * dot(s.S, local_field(&s));
             E -= dot(s.S, global_field);
         }
-        return E / lat.lattice.num_primitive_cells();
+        return E / lat->lattice.num_primitive_cells();
+    }
+
+    void MC_runner::rebind(Lattice& new_lat){
+        assert(new_lat.get_objects<HeisenbergSpin>().size()
+                == lat->get_objects<HeisenbergSpin>().size());
+        lat = &new_lat;
     }
 
 

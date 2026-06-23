@@ -197,9 +197,9 @@ def main():
         except ValueError:
             x_val = x_str
 
-        qz_str = params.get('Qz')
+        qz_str = params.get('Q') or params.get('Qz')
         if qz_str is None:
-            print(f"Warning: 'Qz' not found in {os.path.basename(fpath)}, skipping",
+            print(f"Warning: 'Q' or 'Qz' not found in {os.path.basename(fpath)}, skipping",
                   file=sys.stderr)
             continue
         qz = float(qz_str)
