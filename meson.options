@@ -1,0 +1,5 @@
+option('build_pt',
+  type: 'boolean',
+  value: false,
+  description: 'Build parallel tempering binary (temper) with MPI support'
+)
