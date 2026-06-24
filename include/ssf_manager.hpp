@@ -148,6 +148,50 @@ public:
         if (ft_z_) ft_z_->point_at(sc2);
     }
 
+    // Metadata accessors (for MPI merge on rank 0).
+    int    get_n_sl()       const { return n_sl_; }
+    int    get_n_kpoints()  const { return n_kpoints_; }
+    ivec3_t get_k_dims()    const { return k_dims_; }
+    int    get_n_spins()    const { return n_spins_; }
+    size_t get_n_corr()     const { return corr_specs_.size(); }
+    size_t get_n_samples_at(size_t t_idx) const { return n_samples.at(t_idx); }
+    double get_T_at(size_t t_idx)         const { return T_list.at(t_idx); }
+
+    std::vector<std::string> get_corr_labels() const {
+        std::vector<std::string> labels;
+        for (const auto& s : corr_specs_) labels.push_back(s.label);
+        return labels;
+    }
+    const std::vector<ipos_t>& get_sl_positions() const { return sl_positions_; }
+
+    // Serialise accumulated data for one temperature slot into flat double arrays.
+    // Layout: [n_corr, n_k, n_sl, n_sl, 2] (last dim = re/im), matching the
+    // per-T slice of static_corr written by write_group.
+    void get_flat_buffer(size_t t_idx,
+                         std::vector<double>& corr_buf,
+                         std::vector<double>& corr_sq_buf) const {
+        const size_t nc  = corr_specs_.size();
+        const size_t nk  = static_cast<size_t>(n_kpoints_);
+        const size_t ns  = static_cast<size_t>(n_sl_);
+        const size_t n_e = nc * nk * ns * ns * 2;
+        corr_buf.resize(n_e);
+        corr_sq_buf.resize(n_e);
+        for (size_t c = 0; c < nc; ++c)
+            for (size_t mu = 0; mu < ns; ++mu)
+                for (size_t nu = 0; nu < ns; ++nu)
+                    for (size_t k = 0; k < nk; ++k) {
+                        const auto val    = corr_[c][t_idx](
+                            static_cast<int>(mu), static_cast<int>(nu))[k];
+                        const auto sq_val = corr_sq_[c][t_idx](
+                            static_cast<int>(mu), static_cast<int>(nu))[k];
+                        const size_t base = ((c * nk + k) * ns + mu) * ns + nu;
+                        corr_buf   [base * 2]     = val.real();
+                        corr_buf   [base * 2 + 1] = val.imag();
+                        corr_sq_buf[base * 2]     = sq_val.real();
+                        corr_sq_buf[base * 2 + 1] = sq_val.imag();
+                    }
+    }
+
     // Fourier-transform the current spin configuration and accumulate C^{αβ}_{μν}(q).
     void sample() {
         assert(!T_list.empty());

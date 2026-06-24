@@ -13,6 +13,11 @@ fftw_dep = dependency('fftw3', required: true)
 
 hdf5_dep = dependency('hdf5', required: true, language: 'cpp')
 
+
+build_pt = get_option('build_pt')
+
+mpi_dep = dependency('mpi', include_type: 'system', required: build_pt)
+
 cc=meson.get_compiler('c')
 
 # Detect whether HDF5 was built with MPI support
@@ -20,22 +25,19 @@ if cc.compiles('''
     #include <hdf5.h>
     int main() { return 0; }
 ''',
-    name: 'Check for parallel HDF5',
+    name: 'HDF5 compiles without MPI',
     dependencies: hdf5_dep
 )
 
     message('Serial HDF5 detected')
 else
- # suspect MPI is needed
-    # Get MPI headers only (no linking)
-    mpi_dep = dependency('mpi', required: true, include_type: 'system')
+  # pull in MPI
 
-    # Combine deps so your target automatically gets mpi.h
     hdf5_dep = declare_dependency(
         dependencies: [hdf5_dep, mpi_dep]
     )
     message('parallel HDF5 detected')
-endif   
+endif
 
 
 
@@ -65,12 +67,14 @@ fieldcool_bin = executable('fieldcool',
   include_directories: CMC_inc
   )
 
-temper_bin = executable('temper', 
-  files('src/temper.cpp'),
-  dependencies: g_deps,
-  link_with: mc_lib,
-  include_directories: CMC_inc
-  )
+if build_pt
+  temper_bin = executable('temper',
+    files('src/temper.cpp'),
+    dependencies: [g_deps, mpi_dep],
+    link_with: mc_lib,
+    include_directories: CMC_inc
+    )
+endif
 
 anneal_bin = executable('anneal', 
   files('src/anneal.cpp'),
