@@ -2,7 +2,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
-#include <argparse.hpp>
+#include <argparse/argparse.hpp>
 #include <lattice_lib/unitcell_types.hpp>
 
 

@@ -1,6 +1,6 @@
 
 #include <algorithm>
-#include <argparse.hpp>
+#include <argparse/argparse.hpp>
 #include <filesystem>
 #include <iostream>
 #include <ostream>

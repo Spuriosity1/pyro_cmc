@@ -2,7 +2,7 @@
 #include "format_bits.hpp"
 #include "vec3.hpp"
 #include <algorithm>
-#include <argparse.hpp>
+#include <argparse/argparse.hpp>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
@@ -178,14 +178,12 @@ inline auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& l
             auto v2a = [](vec3d v) -> std::array<double,3> {
                 return {v[0], v[1], v[2]};
             };
-            mat33d J_spec = mat33d::from_cols(
-                v2a(J1*(Delta-1)*z_mu[0]*z_nu + vec3d(J1, 0.0, 0.0)),
-                v2a(J1*(Delta-1)*z_mu[1]*z_nu + vec3d(0.0, J1, 0.0)),
-                v2a(J1*(Delta-1)*z_mu[2]*z_nu + vec3d(0.0, 0.0, J1)));
+            mat33d Ising = mat33d::from_cols(
+                v2a(z_mu[0] * z_nu), v2a(z_mu[1] * z_nu), v2a(z_mu[2] * z_nu));
             std::string pname = "J1_" + std::to_string(mu) + std::to_string(nu);
-            mc.define_coupling(pname, *nn1_pairs[k], J_spec, /*use_pyro_sl_ordering=*/true);
-        }
-    }
+            mc.define_coupling(pname, *nn1_pairs[k], J1*(Delta-1) * Ising + J1*coupling::Heis, /*use_pyro_sl_ordering=*/true);
+        }                                            
+    }                                                
     mc.define_coupling("J2", pyrochlore::nn2_dist, J2*coupling::Heis);
     mc.define_coupling("J3a", pyrochlore::nn3a_dist, J3*coupling::Heis);
     mc.define_coupling("J3b", pyrochlore::nn3b_dist, J3*coupling::Heis);
