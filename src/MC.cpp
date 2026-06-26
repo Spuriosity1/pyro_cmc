@@ -164,6 +164,60 @@ namespace CMC {
         return accepted;
     }
 
+    // Lifted Metropolis step for a single spin.
+    //
+    // Proposes a rotation of S by (lifted_dir * delta) radians around the axis
+    // S × h_loc, which lies in the plane containing S and h_loc.  This means
+    // lifted_dir = +1 rotates S toward the local-field direction (energy-
+    // decreasing) and lifted_dir = -1 rotates away.  On rejection the direction
+    // is flipped instead of staying put, eliminating the diffusive back-and-forth
+    // of standard Metropolis while preserving the correct stationary distribution
+    // via skewed detailed balance.
+    size_t MC_runner::local_lifted_Metropolis(double T, HeisenbergSpin* spin)
+    {
+        auto h_loc = local_field(spin) - global_field;
+        double curr_E = dot(spin->S, h_loc);
+
+        double delta = sqrt(T / settings.T_ref);
+
+        // Rotation axis perpendicular to S in the S–h_loc plane.
+        // rotate_about_vector handles unnormalised axes, and dot(axis, S) = 0
+        // (cross product ⊥ both factors), so the Rodriguez term in S vanishes.
+        auto axis = cross(spin->S, h_loc);
+        double axis_n2 = dot(axis, axis);
+
+        auto new_S = spin->S;
+        if (axis_n2 > 1e-20) {
+            rotate_about_vector(new_S, axis, spin->lifted_dir * delta);
+        } else {
+            // S (anti-)aligned with h_loc: any tangent direction is equivalent.
+            vector3::vec3d perp(normal_dist(rng), normal_dist(rng), normal_dist(rng));
+            perp -= dot(perp, spin->S) * spin->S;
+            double pn2 = dot(perp, perp);
+            if (pn2 > 1e-20)
+                rotate_about_vector(new_S, perp, spin->lifted_dir * delta);
+        }
+        new_S /= norm(new_S); // numerical safety
+
+        double dE = dot(new_S, h_loc) - curr_E;
+        if (dE < 0 || rand01(rng) < exp(-dE / T)) {
+            spin->S = new_S;
+            return 1;
+        }
+
+        spin->lifted_dir = -spin->lifted_dir;
+        return 0;
+    }
+
+    size_t MC_runner::sweep_lifted_Metropolis(double T){
+        size_t accepted = 0;
+        for (auto& spin : lat->get_objects<HeisenbergSpin>()){
+            accepted += local_lifted_Metropolis(T, &spin);
+        }
+        overrelax_all();
+        return accepted;
+    }
+
     double MC_runner::total_energy_per_unit_cell() const{
         double E = 0;
         for (const auto& s : std::get<std::vector<HeisenbergSpin>>(lat->objects)){
