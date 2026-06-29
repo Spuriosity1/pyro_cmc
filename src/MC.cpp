@@ -12,7 +12,7 @@ namespace CMC {
 
 
     void MC_runner::setup_lattice(){
-        int coup_idx = 0;
+        // int coup_idx = 0;
         for (const auto& c : coupling_specs){
             // std::cout << "Coupling Index " << coup_idx++ << " -> linking\n";
 
