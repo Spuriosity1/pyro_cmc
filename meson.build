@@ -1,5 +1,5 @@
 project('spiral_anneal_CMC', ['cpp', 'c'],
-  version: '1.1.0',
+  version: '1.1.1',
   meson_version : '>= 1.5.0',
   default_options : [ 'warning_level=3', 'buildtype=release', 'cpp_std=c++2a' ]
 )

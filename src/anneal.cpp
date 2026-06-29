@@ -90,6 +90,11 @@ int main (int argc, char *argv[]) {
     prog.add_argument("--prefix")
         .default_value("run");
 
+    prog.add_argument("--lifted")
+        .help("Use lifted Metropolis (flip direction on rejection) instead of standard Metropolis")
+        .implicit_value(true)
+        .default_value(false);
+
     declare_LJ123(prog);
 
     try {
@@ -156,12 +161,18 @@ int main (int argc, char *argv[]) {
     energy_manager e_manager;
     ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1, true);
 
-    printf("Done. Begin anneal...\n");
+    const bool use_lifted = prog.get<bool>("--lifted");
+    auto sweep = [&](double T_) -> size_t {
+        return use_lifted ? mc.sweep_lifted_Metropolis(T_)
+                          : mc.sweep_local_Metropolis(T_);
+    };
+
+    printf("Done. Begin anneal%s...\n", use_lifted ? " (lifted Metropolis)" : "");
 
 
     printf("Burning in (%zu sweeps)...\n", n_burn_in);
     for (size_t i=0; i<n_burn_in; i++){
-        mc.sweep_local_Metropolis(T_hot);
+        sweep(T_hot);
     }
 
     for (size_t i=0; i<T_grid.size(); ++i){
@@ -169,7 +180,7 @@ int main (int argc, char *argv[]) {
         size_t accepted=0;
         e_manager.new_T(T);
         for (size_t n=0; n<n_sweep; n++){
-            accepted += mc.sweep_local_Metropolis(T);
+            accepted += sweep(T);
         }
         double e = mc.total_energy_per_unit_cell();
         e_manager.sample(e);
@@ -180,7 +191,7 @@ int main (int argc, char *argv[]) {
             for (size_t i=0; i<n_sample; i++){
                 size_t accepted_ssf=0;
                 for (size_t n=0; n<n_sweep; n++){
-                    accepted_ssf += mc.sweep_local_Metropolis(T);
+                    accepted_ssf += sweep(T);
                 }
                 printf("[ssf] Iter %4zu T=%.3e Acceptance rate: %.2f%%\n", 
                         i, T, accepted_ssf*100.0/lat.get_objects<HeisenbergSpin>().size()/n_sweep);

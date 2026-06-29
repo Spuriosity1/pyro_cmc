@@ -135,10 +135,12 @@ def main():
         description="Plot SSF intensity at Bragg/symmetry-equivalent q-points vs a scan parameter."
     )
     p.add_argument("file", help="Path(s) to HDF5 file", nargs='+')
-    p.add_argument("-x", "--x-axis", required=True, help="Tag to plot along the x-axis")
+    p.add_argument("-x", "--x-axis", default=None,
+                   help="Tag to plot along the x-axis (default: temperature)")
     p.add_argument("-s", "--series-axis", help="Tag to use as a series label")
     p.add_argument("-t", "--t-index", type=int, default=None,
-                   help="Temperature index into the SSF array (default: last = coldest)")
+                   help="Temperature index into the SSF array (default: last = coldest); "
+                        "ignored when -x is not given (temperature mode)")
     p.add_argument("--err-source", choices=["inter", "intra", "total", "both"],
                    default="inter",
                    help="Error bar source (default: inter). 'inter' = seed-to-seed "
@@ -154,6 +156,9 @@ def main():
 
     files = args.file
     fixed, _, all_params = split_fixed_varying(files)
+
+    temp_mode = args.x_axis is None
+    x_label = "T" if temp_mode else args.x_axis
 
     if args.series_axis:
         series_vals = sorted(set(pm.get(args.series_axis, '?') for pm in all_params))
@@ -174,7 +179,7 @@ def main():
     ]
     for ax, title in zip(ax_flat, panel_labels):
         ax.set_title(title)
-        ax.set_xlabel(args.x_axis)
+        ax.set_xlabel(x_label)
         ax.set_ylabel(r"$S(\mathbf{q})$ / spin")
 
     colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
@@ -187,15 +192,16 @@ def main():
     }
 
     for fpath, params in zip(files, all_params):
-        x_str = params.get(args.x_axis)
-        if x_str is None:
-            print(f"Warning: '{args.x_axis}' not found in {os.path.basename(fpath)}, skipping",
-                  file=sys.stderr)
-            continue
-        try:
-            x_val = float(x_str)
-        except ValueError:
-            x_val = x_str
+        if not temp_mode:
+            x_str = params.get(args.x_axis)
+            if x_str is None:
+                print(f"Warning: '{args.x_axis}' not found in {os.path.basename(fpath)}, skipping",
+                      file=sys.stderr)
+                continue
+            try:
+                x_val = float(x_str)
+            except ValueError:
+                x_val = x_str
 
         qz_str = params.get('Q') or params.get('Qz')
         if qz_str is None:
@@ -216,9 +222,13 @@ def main():
 
 
         n_T = corr.shape[1]
-        t_idx = args.t_index if args.t_index is not None else n_T - 1
-        if not (0 <= t_idx < n_T):
-            sys.exit(f"--t-index {t_idx} out of range [0, {n_T - 1}]")
+        if not temp_mode:
+            t_idx = args.t_index if args.t_index is not None else n_T - 1
+            if not (0 <= t_idx < n_T):
+                sys.exit(f"--t-index {t_idx} out of range [0, {n_T - 1}]")
+            t_indices = [t_idx]
+        else:
+            t_indices = range(n_T)
 
         S = apply_phases(corr, corr_lookup, sl_positions, k_dims, n_ssf)
         diag = [c for c in ("xx", "yy", "zz") if c in S]
@@ -253,29 +263,31 @@ def main():
         ]
 
         ser = get_series(params)
-        series_data[ser]['x'].append(x_val)
-        n_per_seed = n_ssf[t_idx] / n_seeds if n_seeds else np.nan
-        for panel, (i0, i1, i2) in enumerate(q_indices):
-            intensity = sum(S[c][t_idx, i0, i1, i2] for c in diag) / n_spins
-            series_data[ser]['I'][panel].append(intensity)
+        for t_idx in t_indices:
+            x_val = ssf_T[t_idx] if temp_mode else x_val  # noqa: F821 (x_val set above for non-temp)
+            series_data[ser]['x'].append(x_val)
+            n_per_seed = n_ssf[t_idx] / n_seeds if n_seeds else np.nan
+            for panel, (i0, i1, i2) in enumerate(q_indices):
+                intensity = sum(S[c][t_idx, i0, i1, i2] for c in diag) / n_spins
+                series_data[ser]['I'][panel].append(intensity)
 
-            if S_inter is not None and n_seeds is not None:
-                W_inter = sum(S_inter[c][t_idx, i0, i1, i2] for c in diag)
-                se_inter = se_from_inter(W_inter, n_seeds, n_spins)
-            elif S2 is not None and n_seeds is not None:
-                W_q = sum(S2[c][t_idx, i0, i1, i2] for c in diag)
-                se_inter = cross_seed_se(W_q, intensity, n_seeds, n_ssf[t_idx], n_spins)
-            else:
-                se_inter = np.nan
+                if S_inter is not None and n_seeds is not None:
+                    W_inter = sum(S_inter[c][t_idx, i0, i1, i2] for c in diag)
+                    se_inter = se_from_inter(W_inter, n_seeds, n_spins)
+                elif S2 is not None and n_seeds is not None:
+                    W_q = sum(S2[c][t_idx, i0, i1, i2] for c in diag)
+                    se_inter = cross_seed_se(W_q, intensity, n_seeds, n_ssf[t_idx], n_spins)
+                else:
+                    se_inter = np.nan
 
-            if S_intra is not None and n_seeds is not None:
-                W_intra = sum(S_intra[c][t_idx, i0, i1, i2] for c in diag)
-                se_intra = se_from_intra(W_intra, n_seeds, n_per_seed, n_spins)
-            else:
-                se_intra = np.nan
+                if S_intra is not None and n_seeds is not None:
+                    W_intra = sum(S_intra[c][t_idx, i0, i1, i2] for c in diag)
+                    se_intra = se_from_intra(W_intra, n_seeds, n_per_seed, n_spins)
+                else:
+                    se_intra = np.nan
 
-            series_data[ser]['SE_inter'][panel].append(se_inter)
-            series_data[ser]['SE_intra'][panel].append(se_intra)
+                series_data[ser]['SE_inter'][panel].append(se_inter)
+                series_data[ser]['SE_intra'][panel].append(se_intra)
 
     plotted_any = False
     for ser in series_vals:
@@ -317,7 +329,10 @@ def main():
         plotted_any = True
 
     if not plotted_any:
-        sys.exit("No data to plot — check that --x-axis and Qz tags exist in the filenames.")
+        if temp_mode:
+            sys.exit("No data to plot — check that Qz tag exists in the filenames.")
+        else:
+            sys.exit("No data to plot — check that --x-axis and Qz tags exist in the filenames.")
 
     if args.series_axis:
         ax_flat[0].legend(title=args.series_axis, fontsize=8)
@@ -328,7 +343,10 @@ def main():
 
     fixed_str = "  ".join(f"{k}={v}" for k, v in fixed.items())
 
-    suptitle = r"$S(\mathbf{q})$ at symmetry-equivalent wavevectors, T="+str(ssf_T[t_idx])
+    if temp_mode:
+        suptitle = r"$S(\mathbf{q})$ at symmetry-equivalent wavevectors vs $T$"
+    else:
+        suptitle = r"$S(\mathbf{q})$ at symmetry-equivalent wavevectors, T=" + str(ssf_T[t_idx])
     if fixed_str:
         suptitle += f"\n{fixed_str}"
     fig.suptitle(suptitle)

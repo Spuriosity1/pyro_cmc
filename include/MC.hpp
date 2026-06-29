@@ -45,6 +45,7 @@ struct HeisenbergSpin {
     int pyro_sl = 0;                       // pyrochlore sublattice 0–3
     vector3::vec3<double> S;
     std::vector<NeighbourSpins> bond_sets;
+    int8_t lifted_dir = 1;                 // ±1; used by sweep_lifted_Metropolis, ignored otherwise
 };
 
 /**
@@ -121,10 +122,12 @@ public:
     void setup_lattice();
 
     size_t local_Metropolis(double T, HeisenbergSpin* spin);
+    size_t local_lifted_Metropolis(double T, HeisenbergSpin* spin);
 
     void overrelax_all();
     void overrelax_some(double p);
     size_t sweep_local_Metropolis(double T);
+    size_t sweep_lifted_Metropolis(double T);
 };
 
 
