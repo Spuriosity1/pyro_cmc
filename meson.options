@@ -3,3 +3,9 @@ option('build_pt',
   value: false,
   description: 'Build parallel tempering binary (temper) with MPI support'
 )
+
+option('dev',
+  type: 'boolean',
+  value: false,
+  description: 'Symlink scripts directly from the source tree instead of installing copies'
+)

@@ -92,5 +92,34 @@ ltgs_bin = executable('ltgs',
   include_directories: CMC_inc
   )
 
+py_scripts = ['plot_ssf', 'plot_q_dep', 'plot_QaB', 'acc_runs', 'ltgs_drive']
+
+if get_option('dev')
+  foreach s : py_scripts
+    install_symlink(s,
+      pointing_to: meson.project_source_root() / 'scripts' / s + '.py',
+      install_dir: get_option('bindir'),
+    )
+  endforeach
+else
+  install_data(
+    [
+      'scripts/plot_ssf.py',
+      'scripts/plot_q_dep.py',
+      'scripts/plot_QaB.py',
+      'scripts/acc_runs.py',
+      'scripts/ltgs_drive.py',
+    ],
+    install_dir: get_option('datadir') / 'spiral_cmc' / 'scripts',
+    install_mode: 'rwxr-xr-x',
+  )
+  foreach s : py_scripts
+    install_symlink(s,
+      pointing_to: '../share/spiral_cmc/scripts' / s + '.py',
+      install_dir: get_option('bindir'),
+    )
+  endforeach
+endif
+
 subdir('test')
 
