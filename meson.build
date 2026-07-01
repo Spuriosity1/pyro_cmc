@@ -72,7 +72,8 @@ if build_pt
     files('src/temper.cpp'),
     dependencies: [g_deps, mpi_dep],
     link_with: mc_lib,
-    include_directories: CMC_inc
+    include_directories: CMC_inc,
+    install: true
     )
 endif
 
@@ -80,7 +81,8 @@ anneal_bin = executable('anneal',
   files('src/anneal.cpp'),
   dependencies: g_deps,
   link_with: mc_lib,
-  include_directories: CMC_inc
+  include_directories: CMC_inc,
+  install: true
   )
 
 eigen_dep = dependency('eigen3', required: true, include_type: 'system')
@@ -89,7 +91,8 @@ ltgs_bin = executable('ltgs',
   files('src/luttinger_tisza.cpp'),
   dependencies: g_deps + [eigen_dep],
   link_with: mc_lib,
-  include_directories: CMC_inc
+  include_directories: CMC_inc,
+  install: true
   )
 
 py_scripts = ['plot_ssf', 'plot_q_dep', 'plot_QaB', 'acc_runs', 'ltgs_drive']

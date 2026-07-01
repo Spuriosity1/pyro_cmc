@@ -159,7 +159,18 @@ int main (int argc, char *argv[]) {
 
     auto [T_grid, S_idx] = generate_T_profile(T_hot, T_cold, T_sample, n_steps);
     energy_manager e_manager;
-    ssf_manager ssfm(lat, {"xx", "yy", "zz"}, 1, true);
+
+    // Create the output file before the sampling loop so ssf_manager can
+    // pre-allocate static_corr on disk and write each temperature's data
+    // immediately after sampling (streaming mode).  File creation here also
+    // means a partial result is recoverable if the job is killed mid-run.
+    auto file_path = outdir/( name.str() + ".out.h5");
+    hid_t file_id = H5Fcreate(file_path.string().c_str(), H5F_ACC_TRUNC,
+                               H5P_DEFAULT, H5P_DEFAULT);
+    if (file_id < 0)
+        throw std::runtime_error("Failed to create HDF5 file: " + file_path.string());
+
+    ssf_manager ssfm(lat, {"xx", "yy", "zz"}, file_id, "/ssf", T_sample, true);
 
     const bool use_lifted = prog.get<bool>("--lifted");
     auto sweep = [&](double T_) -> size_t {
@@ -193,10 +204,11 @@ int main (int argc, char *argv[]) {
                 for (size_t n=0; n<n_sweep; n++){
                     accepted_ssf += sweep(T);
                 }
-                printf("[ssf] Iter %4zu T=%.3e Acceptance rate: %.2f%%\n", 
+                printf("[ssf] Iter %4zu T=%.3e Acceptance rate: %.2f%%\n",
                         i, T, accepted_ssf*100.0/lat.get_objects<HeisenbergSpin>().size()/n_sweep);
                 ssfm.sample();
             }
+            ssfm.flush();
         }
 
         double E = e_manager.curr_E();
@@ -205,16 +217,10 @@ int main (int argc, char *argv[]) {
 
     }
 
-    auto file_path = outdir/( name.str() + ".out.h5");
-
-    hid_t file_id = H5Fcreate(file_path.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
-    if (file_id < 0) {
-        throw std::runtime_error("Failed to create HDF5 file: " + file_path.string());
-    }
-
     ssfm.write_group(file_id, "/ssf");
     e_manager.write_group(file_id, "/energy");
     write_geometry_group(file_id, lat);
+    H5Fclose(file_id);
     std::cout<<"Saved to \n"<< file_path<<std::endl;
     
     if (prog.get<bool>("--save_state")){
