@@ -106,7 +106,6 @@ inline double resolve_J3(const argparse::ArgumentParser& prog) {
     if (has_J3 && has_Q)
         throw std::runtime_error("--J3 and --Q are mutually exclusive");
     if (has_Q) {
-        int    L  = prog.get<int>("L");
         double Qz =prog.get<double>("--Q");
         double J1 = prog.get<double>("--J1");
         double J2_eff = prog.get<double>("--J2") / std::abs(J1);
@@ -153,7 +152,6 @@ inline auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& l
     auto J2 = prog.get<double>("--J2");
     auto J3 = resolve_J3(prog);
     if (prog.is_used("--Q")) {
-        int    L          = prog.get<int>("L");
         double Qz         = prog.get<double>("--Q");
         int axis = prog.get<int>("--spiral_axis");
         printf("Using Q=%.10g along axis %d -> J3=%.10g\n", Qz, axis, J3);
