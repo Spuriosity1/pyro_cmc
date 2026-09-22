@@ -107,7 +107,7 @@ inline double resolve_J3(const argparse::ArgumentParser& prog) {
         throw std::runtime_error("--J3 and --Q are mutually exclusive");
     if (has_Q) {
         int    L  = prog.get<int>("L");
-        double Qz = round_Qz_to_supercell(prog.get<double>("--Q"), L);
+        double Qz =prog.get<double>("--Q");
         double J1 = prog.get<double>("--J1");
         double J2_eff = prog.get<double>("--J2") / std::abs(J1);
         double J3 = J3_from_Qz(J2_eff, Qz) * std::abs(J1);
@@ -155,10 +155,8 @@ inline auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& l
     if (prog.is_used("--Q")) {
         int    L          = prog.get<int>("L");
         double Qz         = prog.get<double>("--Q");
-        double Qz_rounded = round_Qz_to_supercell(Qz, L);
-        warn_Qz_rounding(Qz, Qz_rounded);
         int axis = prog.get<int>("--spiral_axis");
-        printf("Using Q=%.10g along axis %d -> J3=%.10g\n", Qz_rounded, axis, J3);
+        printf("Using Q=%.10g along axis %d -> J3=%.10g\n", Qz, axis, J3);
     }
 
     auto Jzz = prog.get<double>("--Jzz");
@@ -244,8 +242,8 @@ inline auto name_LJ123(const argparse::ArgumentParser& prog){
         "Jzz="<<Jzz<<DELIM<<
         "K="<<K<<DELIM;
     if (prog.is_used("--Q")) {
-        double Qz_rounded = round_Qz_to_supercell(prog.get<double>("--Q"), L);
-        name << "Q="<<Qz_rounded<<DELIM;
+        double Qz = prog.get<double>("--Q");
+        name << "Q="<<Qz<<DELIM;
         int axis = prog.get<int>("--spiral_axis");
         if (axis != 2)
             name << "spiral_axis="<<axis<<DELIM;

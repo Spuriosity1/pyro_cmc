@@ -142,10 +142,11 @@ int main (int argc, char *argv[]) {
     if (prog.get<bool>("--init_spiral")) {
         if (!prog.is_used("--Q"))
             throw runtime_error("--init_spiral requires --Q");
-        double Q_rounded = round_Qz_to_supercell(prog.get<double>("--Q"), prog.get<int>("L"));
+        // double Q_given = round_Qz_to_supercell(prog.get<double>("--Q"), prog.get<int>("L"));
+        double Q_given = prog.get<double>("--Q");
         int spiral_axis = prog.get<int>("--spiral_axis");
-        printf("Pre-initialising to spiral order (Q=%.10g, axis=%d)...\n", Q_rounded, spiral_axis);
-        init_spiral_state(lat, Q_rounded, spiral_axis);
+        printf("Pre-initialising to spiral order (Q=%.10g, axis=%d)...\n", Q_given, spiral_axis);
+        init_spiral_state(lat, Q_given, spiral_axis);
     }
 
     auto B = prog.get<std::vector<double>>("-B");
