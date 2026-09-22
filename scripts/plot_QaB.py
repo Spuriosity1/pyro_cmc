@@ -106,6 +106,12 @@ def main():
                         "intra as a faint wide band behind the solid inter-seed bars")
     p.add_argument("--vmin", type=float, default=None)
     p.add_argument("--vmax", type=float, default=None)
+    p.add_argument("--per-site", action="store_true",
+                   help="Normalise by N^2 instead of N, i.e. plot the intensive "
+                        "order parameter m^2 = S(Q)/N. A Bragg peak scales as "
+                        "S(Q) ~ N*m^2, so this makes the ordered-peak curves for "
+                        "different L overlap (the default /N leaves it extensive). "
+                        "Note: diffuse (~N) points then scale as 1/N.")
     p.add_argument("-o", "--output", default=None,
                    help="Save figure to file instead of displaying")
     args = p.parse_args()
@@ -138,10 +144,12 @@ def main():
         r"3rd highest",
         r"$\Gamma = (0,0,0)$",
     ]
+    y_label = (r"$m^2 = S(\mathbf{q})/N$" if args.per_site
+               else r"$S(\mathbf{q})$ / spin")
     for ax, title in zip(ax_flat, panel_labels):
         ax.set_title(title)
         ax.set_xlabel(x_label)
-        ax.set_ylabel(r"$S(\mathbf{q})$ / spin")
+        ax.set_ylabel(y_label)
 
     colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
     series_color = {v: colors[i % len(colors)] for i, v in enumerate(series_vals)}
@@ -174,6 +182,10 @@ def main():
         (_, _, _, _, _, _,
          corr, corr_lookup, sl_positions, k_dims, n_spins, ssf_T, n_ssf) = load_file(fpath)
 
+        # Default /N gives the standard structure factor S(q); --per-site divides
+        # by N again to give the intensive order parameter m^2 = S(Q)/N, so the
+        # ordered Bragg peak overlaps across system sizes L.
+        norm = n_spins**2 if args.per_site else n_spins
 
         n_T = corr.shape[1]
         if not temp_mode:
@@ -225,12 +237,12 @@ def main():
             n_per_seed = n_ssf[t_idx] / n_seeds if n_seeds else np.nan
             for panel in range(len(q_indices)):
                 i0, i1, i2 = q_indices[perm[panel]]
-                intensity = sum(S[c][t_idx, i0, i1, i2] for c in diag) / n_spins
+                intensity = sum(S[c][t_idx, i0, i1, i2] for c in diag) / norm
                 series_data[ser]['I'][panel].append(intensity)
 
                 if S_inter is not None and n_seeds is not None:
                     W_inter = sum(S_inter[c][t_idx, i0, i1, i2] for c in diag)
-                    se_inter = se_from_inter(W_inter, n_seeds, n_spins)
+                    se_inter = se_from_inter(W_inter, n_seeds, norm)
                 # elif S2 is not None and n_seeds is not None:
                 #     W_q = sum(S2[c][t_idx, i0, i1, i2] for c in diag)
                 #     se_inter = cross_seed_se(W_q, intensity, n_seeds, n_ssf[t_idx], n_spins)
@@ -239,7 +251,7 @@ def main():
 
                 if S_intra is not None and n_seeds is not None:
                     W_intra = sum(S_intra[c][t_idx, i0, i1, i2] for c in diag)
-                    se_intra = se_from_intra(W_intra, n_seeds, n_per_seed, n_spins)
+                    se_intra = se_from_intra(W_intra, n_seeds, n_per_seed, norm)
                 else:
                     se_intra = np.nan
 

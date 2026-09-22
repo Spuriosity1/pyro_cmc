@@ -6,6 +6,7 @@
 #include "energy_manager.hpp"
 #include "pyrochlore_geometry.hpp"
 #include "format_bits.hpp"
+#include "h5_bits.hpp"
 
 /*
 This program performs classical Monte Carlo simulated annealing for a spin
@@ -164,22 +165,23 @@ int main (int argc, char *argv[]) {
     auto [T_grid, S_idx] = generate_T_profile(T_hot, T_cold, T_sample, n_steps);
     energy_manager e_manager;
 
-    // Create the output file before the sampling loop so ssf_manager can
-    // pre-allocate static_corr on disk and write each temperature's data
-    // immediately after sampling (streaming mode).  File creation here also
+    // Create the (empty) output file before the sampling loop so ssf_manager can
+    // pre-allocate static_corr on disk and stream each temperature's data to it
+    // immediately after sampling.  The file is closed here and only reopened
+    // briefly for each per-temperature flush and the final metadata write, so
+    // its advisory lock is never held during the long MC sweeps — hundreds of
+    // concurrent jobs would otherwise exhaust the cluster filesystem's lock
+    // manager (H5Fcreate failing with errno 11).  Creating it up front also
     // means a partial result is recoverable if the job is killed mid-run.
     auto file_path = outdir/( name.str() + ".out.h5");
-    hid_t file_id = H5Fcreate(file_path.string().c_str(), H5F_ACC_TRUNC,
-                               H5P_DEFAULT, H5P_DEFAULT);
-    if (file_id < 0)
-        throw std::runtime_error("Failed to create HDF5 file: " + file_path.string());
+    H5Fclose(h5_create_trunc_nolock(file_path.string()));
 
     // Full symmetric spin-correlation matrix: the three diagonal components give
     // the Heisenberg trace <S.S>(q); the three off-diagonals carry the spiral-plane
     // tensor (real part) and the vector chirality (imaginary part), from which the
     // O(3)-invariant plane observables are reconstructed in postprocessing.
     ssf_manager ssfm(lat, {"xx", "yy", "zz", "xy", "xz", "yz"},
-                     file_id, "/ssf", T_sample, true);
+                     file_path.string(), "/ssf", T_sample, true);
 
     const bool use_lifted = prog.get<bool>("--lifted");
     auto sweep = [&](double T_) -> size_t {
@@ -226,10 +228,15 @@ int main (int argc, char *argv[]) {
 
     }
 
-    ssfm.write_group(file_id, "/ssf");
-    e_manager.write_group(file_id, "/energy");
-    write_geometry_group(file_id, lat);
-    H5Fclose(file_id);
+    // ssf metadata reopens the file itself; energy + geometry share one final
+    // brief reopen.
+    ssfm.write_group(-1, "/ssf");
+    {
+        hid_t file_id = h5_open_rdwr_nolock(file_path.string());
+        e_manager.write_group(file_id, "/energy");
+        write_geometry_group(file_id, lat);
+        H5Fclose(file_id);
+    }
     std::cout<<"Saved to \n"<< file_path<<std::endl;
 
     if (prog.get<bool>("--save_state_ft")){

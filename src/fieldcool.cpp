@@ -194,10 +194,7 @@ int main (int argc, char *argv[]) {
 
     auto file_path = outdir/( name.str() + ".out.h5");
 
-    hid_t file_id = H5Fcreate(file_path.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
-    if (file_id < 0) {
-        throw std::runtime_error("Failed to create HDF5 file: " + file_path.string());
-    }
+    hid_t file_id = h5_create_trunc_nolock(file_path.string());
 
     ssfm.write_group(file_id, "/ssf");
     e_manager.write_group(file_id, "/energy");

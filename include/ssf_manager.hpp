@@ -2,8 +2,11 @@
 
 #include "MC.hpp"
 #include "abstract_manager.hpp"
+#include "h5_bits.hpp"
 #include <lattice_lib/fourier.hpp>
 #include "H5Apublic.h"
+#include "H5Dpublic.h"
+#include "H5Fpublic.h"
 #include "H5Gpublic.h"
 #include "H5Ipublic.h"
 #include "H5Ppublic.h"
@@ -62,12 +65,17 @@ struct CorrSpec {
 //       ssf_manager ssf(lat, {"xx","yy","zz"});
 //       ssf.new_T(T); for (...) ssf.sample(); ssf.write_group(file_id, "/ssf");
 //
-//   (B) Streaming (anneal.cpp): file is opened upfront and static_corr is
-//       pre-allocated on disk; each temperature's data is written and freed
-//       after sampling, keeping only one temperature in memory at a time.
-//       ssf_manager ssf(lat, {"xx","yy","zz"}, file_id, "/ssf", T_sample);
+//   (B) Streaming (anneal.cpp): static_corr is pre-allocated on disk at
+//       construction; each temperature's data is written and freed after
+//       sampling, keeping only one temperature in memory at a time (the full
+//       set does not fit — it OOMs). The file is NOT held open across the run:
+//       it is reopened only for the brief flush() and final metadata writes, so
+//       its advisory lock is unheld during the long MC sweeps. This stops
+//       hundreds of concurrent jobs from exhausting the cluster filesystem's
+//       lock manager (H5Fcreate failing with errno 11, EAGAIN).
+//       ssf_manager ssf(lat, {"xx","yy","zz"}, file_path, "/ssf", T_sample);
 //       for each T: ssf.new_T(T); for (...) ssf.sample(); ssf.flush();
-//       ssf.write_group(file_id, "/ssf");   // metadata only
+//       ssf.write_group(-1, "/ssf");   // metadata only (file_id ignored)
 //
 // HDF5 output layout (write_group):
 //   static_corr  [n_corr, n_T, n_k, 2]  — last dim = re/im (sublattice-contracted)
@@ -106,11 +114,12 @@ class ssf_manager : public abstract_manager {
 
     const bool store_error_term_;
 
-    // Streaming-mode HDF5 state. All handles are -1 in non-streaming mode.
+    // Streaming-mode state. Unlike a persistent open handle, the file is
+    // referenced by path and reopened only for the moments it is written, so no
+    // POSIX advisory lock is held during the long MC sweeps.
     bool streaming_mode_ = false;
-    hid_t grp_       = -1;
-    hid_t sum_ds_    = -1;
-    hid_t sum_sq_ds_ = -1;
+    std::string file_path_;
+    std::string group_name_;
     // T_sample values sorted ascending; index = HDF5 slot for that temperature.
     std::vector<double> T_sorted_;
 
@@ -202,25 +211,24 @@ public:
 
     // Streaming constructor — for anneal.cpp.
     // Creates the HDF5 group and pre-allocates static_corr / static_corr_2 on
-    // disk immediately, then flush() writes one temperature at a time so only
-    // O(n_corr * n_k) memory is held per temperature instead of O(n_T * n_corr * n_k).
+    // disk immediately (then closes the file), and flush() writes one
+    // temperature at a time so only O(n_corr * n_k) memory is held per
+    // temperature instead of O(n_T * n_corr * n_k) — the full set OOMs.
     // Sublattice indices are contracted away in sample(), so neither memory nor
     // disk carries the n_sl^2 factor.
     //
-    // Pre-allocation with H5D_ALLOC_TIME_EARLY reserves the full file extent at
-    // creation, so subsequent flush() calls write in-place without growing the
-    // file — the preferred pattern on Lustre.
+    // The file at file_path must already exist (created by the caller). Pre-
+    // allocation with H5D_ALLOC_TIME_EARLY reserves the full file extent at
+    // dataset creation, so subsequent flush() calls write in-place without
+    // growing the file — the preferred pattern on Lustre — and can reopen the
+    // file, write their one slot, and close again without any resize.
     ssf_manager(CMC::Lattice& sc,
                 const std::vector<std::string>& correlator_names,
-                hid_t file_id, const char* group_name,
+                const std::string& file_path, const char* group_name,
                 const std::vector<double>& T_sample,
                 bool store_error_term = true);
 
-    ~ssf_manager() {
-        if (sum_ds_    >= 0) H5Dclose(sum_ds_);
-        if (sum_sq_ds_ >= 0) H5Dclose(sum_sq_ds_);
-        if (grp_       >= 0) H5Gclose(grp_);
-    }
+    ~ssf_manager() override = default;
 
     void point_at(CMC::Lattice& sc2){
         if (ft_x_) ft_x_->point_at(sc2);
@@ -315,7 +323,7 @@ public:
 // ---------------------------------------------------------------------------
 inline ssf_manager::ssf_manager(CMC::Lattice& sc,
                                  const std::vector<std::string>& correlator_names,
-                                 hid_t file_id, const char* group_name,
+                                 const std::string& file_path, const char* group_name,
                                  const std::vector<double>& T_sample,
                                  bool store_error_term)
     : n_sl_(static_cast<int>(
@@ -327,7 +335,9 @@ inline ssf_manager::ssf_manager(CMC::Lattice& sc,
           std::get<SlPos<CMC::HeisenbergSpin>>(sc.sl_positions).begin(),
           std::get<SlPos<CMC::HeisenbergSpin>>(sc.sl_positions).end()),
       store_error_term_(store_error_term),
-      streaming_mode_(true)
+      streaming_mode_(true),
+      file_path_(file_path),
+      group_name_(group_name)
 {
     auto axis_idx = [](char c) -> int {
         if (c == 'x') return 0;
@@ -362,15 +372,23 @@ inline ssf_manager::ssf_manager(CMC::Lattice& sc,
     T_list.reserve(n_T);
     n_samples.reserve(n_T);
 
+    // Briefly open the (already-created) file to lay down the group and pre-
+    // allocate the datasets, then close it. Nothing is held open afterwards;
+    // flush() reopens for each write.
+    hid_t file_id = h5_open_rdwr_nolock(file_path_);
+
     // Open or create group
+    hid_t grp;
     if (H5Lexists(file_id, group_name, H5P_DEFAULT) > 0)
-        grp_ = H5Gopen2(file_id, group_name, H5P_DEFAULT);
+        grp = H5Gopen2(file_id, group_name, H5P_DEFAULT);
     else
-        grp_ = H5Gcreate2(file_id, group_name,
-                           H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    if (grp_ < 0)
+        grp = H5Gcreate2(file_id, group_name,
+                         H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    if (grp < 0) {
+        H5Fclose(file_id);
         throw std::runtime_error(
             std::string("ssf_manager: failed to open/create group ") + group_name);
+    }
 
     // Pre-allocate static_corr[n_corr, n_T, n_k, 2].
     // H5D_ALLOC_TIME_EARLY reserves the full file extent at dataset creation so
@@ -384,26 +402,28 @@ inline ssf_manager::ssf_manager(CMC::Lattice& sc,
     H5Pset_layout(dcpl, H5D_CONTIGUOUS);
     H5Pset_alloc_time(dcpl, H5D_ALLOC_TIME_EARLY);
 
-    sum_ds_ = H5Dcreate2(grp_, "static_corr", H5T_NATIVE_DOUBLE, fspace,
-                          H5P_DEFAULT, dcpl, H5P_DEFAULT);
-    if (sum_ds_ < 0) {
-        H5Pclose(dcpl); H5Sclose(fspace); H5Gclose(grp_); grp_ = -1;
+    hid_t sum_ds = H5Dcreate2(grp, "static_corr", H5T_NATIVE_DOUBLE, fspace,
+                              H5P_DEFAULT, dcpl, H5P_DEFAULT);
+    if (sum_ds < 0) {
+        H5Pclose(dcpl); H5Sclose(fspace); H5Gclose(grp); H5Fclose(file_id);
         throw std::runtime_error("ssf_manager: failed to create static_corr");
     }
+    H5Dclose(sum_ds);
 
     if (store_error_term_) {
-        sum_sq_ds_ = H5Dcreate2(grp_, "static_corr_2", H5T_NATIVE_DOUBLE, fspace,
-                                 H5P_DEFAULT, dcpl, H5P_DEFAULT);
-        if (sum_sq_ds_ < 0) {
-            H5Pclose(dcpl); H5Sclose(fspace);
-            H5Dclose(sum_ds_); sum_ds_ = -1;
-            H5Gclose(grp_); grp_ = -1;
+        hid_t sum_sq_ds = H5Dcreate2(grp, "static_corr_2", H5T_NATIVE_DOUBLE, fspace,
+                                     H5P_DEFAULT, dcpl, H5P_DEFAULT);
+        if (sum_sq_ds < 0) {
+            H5Pclose(dcpl); H5Sclose(fspace); H5Gclose(grp); H5Fclose(file_id);
             throw std::runtime_error("ssf_manager: failed to create static_corr_2");
         }
+        H5Dclose(sum_sq_ds);
     }
 
     H5Pclose(dcpl);
     H5Sclose(fspace);
+    H5Gclose(grp);
+    H5Fclose(file_id);
 }
 
 
@@ -430,6 +450,20 @@ inline void ssf_manager::flush() {
     std::vector<double> buf, sq_buf;
     flatten_current(buf, sq_buf);
 
+    // Reopen the file only for this write; it is closed again before returning
+    // so no advisory lock is held while the next batch of MC sweeps runs. The
+    // datasets were pre-allocated (ALLOC_TIME_EARLY) at construction, so this is
+    // an in-place hyperslab write with no resize.
+    hid_t file_id = h5_open_rdwr_nolock(file_path_);
+    const std::string sum_path    = group_name_ + "/static_corr";
+    const std::string sum_sq_path = group_name_ + "/static_corr_2";
+
+    hid_t sum_ds = H5Dopen2(file_id, sum_path.c_str(), H5P_DEFAULT);
+    if (sum_ds < 0) {
+        H5Fclose(file_id);
+        throw std::runtime_error("ssf_manager::flush: failed to open static_corr");
+    }
+
     // Write one T-slice via hyperslab.
     // Each flush is nc * nk * 2 * 8 bytes — large sequential I/O on Lustre.
     const hsize_t start[4] = { 0, slot, 0, 0 };
@@ -437,22 +471,30 @@ inline void ssf_manager::flush() {
     const hsize_t mem_dims  = nc * nk * 2;
     hid_t mem_sp  = H5Screate_simple(1, &mem_dims, nullptr);
 
-    hid_t file_sp = H5Dget_space(sum_ds_);
+    hid_t file_sp = H5Dget_space(sum_ds);
     H5Sselect_hyperslab(file_sp, H5S_SELECT_SET, start, nullptr, count, nullptr);
-    herr_t rc = H5Dwrite(sum_ds_, H5T_NATIVE_DOUBLE,
+    herr_t rc = H5Dwrite(sum_ds, H5T_NATIVE_DOUBLE,
                           mem_sp, file_sp, H5P_DEFAULT, buf.data());
     H5Sclose(file_sp);
+    H5Dclose(sum_ds);
 
     if (store_error_term_) {
-        file_sp = H5Dget_space(sum_sq_ds_);
+        hid_t sum_sq_ds = H5Dopen2(file_id, sum_sq_path.c_str(), H5P_DEFAULT);
+        if (sum_sq_ds < 0) {
+            H5Sclose(mem_sp); H5Fclose(file_id);
+            throw std::runtime_error("ssf_manager::flush: failed to open static_corr_2");
+        }
+        file_sp = H5Dget_space(sum_sq_ds);
         H5Sselect_hyperslab(file_sp, H5S_SELECT_SET, start, nullptr, count, nullptr);
-        herr_t rc2 = H5Dwrite(sum_sq_ds_, H5T_NATIVE_DOUBLE,
+        herr_t rc2 = H5Dwrite(sum_sq_ds, H5T_NATIVE_DOUBLE,
                                mem_sp, file_sp, H5P_DEFAULT, sq_buf.data());
         H5Sclose(file_sp);
+        H5Dclose(sum_sq_ds);
         if (rc2 < 0) rc = rc2;
     }
 
     H5Sclose(mem_sp);
+    H5Fclose(file_id);
 
     if (rc < 0)
         throw std::runtime_error("ssf_manager::flush: H5Dwrite failed");
@@ -566,13 +608,21 @@ inline void ssf_manager::write_group(hid_t file_id, const char* group_name) {
         if (!curr_S_.empty() && !T_list.empty())
             flush();
 
-        // Write metadata to the already-open group.
-        write_metadata(grp_);
-
-        // Close dataset and group handles; mark them invalid so the destructor skips them.
-        if (sum_ds_    >= 0) { H5Dclose(sum_ds_);    sum_ds_    = -1; }
-        if (sum_sq_ds_ >= 0) { H5Dclose(sum_sq_ds_); sum_sq_ds_ = -1; }
-        if (grp_       >= 0) { H5Gclose(grp_);        grp_       = -1; }
+        // Reopen the file just to append metadata to the pre-created group,
+        // then close. file_id / group_name arguments are ignored in streaming
+        // mode — the path and group were fixed at construction.
+        (void)file_id;
+        (void)group_name;
+        hid_t fid = h5_open_rdwr_nolock(file_path_);
+        hid_t grp = H5Gopen2(fid, group_name_.c_str(), H5P_DEFAULT);
+        if (grp < 0) {
+            H5Fclose(fid);
+            throw std::runtime_error(
+                std::string("ssf_manager: failed to open group ") + group_name_);
+        }
+        write_metadata(grp);
+        H5Gclose(grp);
+        H5Fclose(fid);
         return;
     }
 

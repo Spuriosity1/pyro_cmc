@@ -233,14 +233,25 @@ def merge_group(fnames_raw):
     E2_total = None
     n_total  = None
 
-    # purge any corrupt files
+    # Purge any corrupt/unreadable files up front so a single bad run — e.g. a
+    # mid-write or truncated HDF5 from a still-running job — doesn't abort the
+    # whole group. Both readers must succeed, since energy and ssf are each
+    # accumulated in their own pass below; a file that opens for energy but is
+    # truncated inside /ssf would otherwise crash the ssf loop.
     fnames = []
     for f in fnames_raw:
-        try: 
+        try:
             _ = load_energy_raw(f)
+            _ = load_ssf_raw(f)
             fnames.append(f)
         except Exception as e:
-            print(f"Failed to process {f}: {e}")
+            print(f"Warning: skipping corrupt/unreadable file {f}: {e}",
+                  file=sys.stderr)
+
+    if not fnames:
+        print("Warning: no readable files in group; nothing merged",
+              file=sys.stderr)
+        return None
 
 
     # accumulate the energies

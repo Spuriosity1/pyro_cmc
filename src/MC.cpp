@@ -474,8 +474,7 @@ namespace CMC {
     }
 
     void save_ft_spin_state(Lattice& lat, const std::filesystem::path& file_path){
-        hid_t file = H5Fcreate(file_path.string().c_str(),
-                H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+        hid_t file = h5_create_trunc_nolock(file_path.string());
 
             // Sublattice-resolved DFT of the spin field, one component at a time.
             // Stored as the raw per-cell transform Ã_μ^raw(K) WITHOUT the
@@ -539,8 +538,7 @@ namespace CMC {
             }
         }
 
-        hid_t file = H5Fcreate(file_path.string().c_str(),
-                H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+        hid_t file = h5_create_trunc_nolock(file_path.string());
 
         hsize_t dims[2] = {N, 3};
         hid_t space = H5Screate_simple(2, dims, NULL);
