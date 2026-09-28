@@ -189,6 +189,45 @@ static const std::vector<std::vector<idx3_t>> nn1_pair_23 = {
     {{ 0, 2,-2}, { 0,-2, 2}}   // pyro_sl=3 → pyro_sl=2
 };
 
+// Neighbour displacement table generated from the spin separation, in the
+// integer coordinate system where the conventional cubic cell has side 8.
+// Returns rel[pyro_sl] = every displacement vector d from a spin of that
+// pyrochlore sublattice (0-3) to a spin exactly |d|^2 == dist_sq away.
+//
+// This supersedes the hand-tabulated nnX_dist shells: a coupling shell is
+// fully specified by its squared separation. The mapping is
+//   J1 -> 8,  J2 -> 24,  J3 -> 32,  J4 -> 40   (12 neighbours each for J2-J4).
+// The old nn3a/nn3b split collapses into the single dist_sq=32 shell, which is
+// exactly correct because both carried the same J3.
+inline std::vector<std::vector<idx3_t>> neighbours_by_distance(int dist_sq) {
+    static constexpr idx3_t R_fcc[4] = {
+        {0,0,0}, {0,4,4}, {4,0,4}, {4,4,0}
+    };
+    static constexpr idx3_t link_positions[4] = {
+        {1,1,1}, {1,-1,-1}, {-1,1,-1}, {-1,-1,1}
+    };
+    // Any displacement component is at most sqrt(dist_sq); with a cell side of 8
+    // a search radius of floor(sqrt(dist_sq)/8)+1 conventional cells is always
+    // wide enough to enclose the whole shell.
+    const int ncell = static_cast<int>(std::sqrt(static_cast<double>(dist_sq)) / 8.0) + 1;
+
+    std::vector<std::vector<idx3_t>> rel(4);
+    for (int p_ref = 0; p_ref < 4; p_ref++) {
+        const idx3_t ref = link_positions[p_ref];  // fcc=0 representative site
+        for (int cx = -ncell; cx <= ncell; cx++)
+        for (int cy = -ncell; cy <= ncell; cy++)
+        for (int cz = -ncell; cz <= ncell; cz++)
+        for (int fcc = 0; fcc < 4; fcc++)
+        for (int p = 0; p < 4; p++) {
+            idx3_t d = R_fcc[fcc] + link_positions[p] - ref;
+            d[0] += 8*cx; d[1] += 8*cy; d[2] += 8*cz;
+            if (d[0]*d[0] + d[1]*d[1] + d[2]*d[2] == dist_sq)
+                rel[p_ref].push_back(d);
+        }
+    }
+    return rel;
+}
+
 // Square roots of 2, 3, and 6 for normalisation
 #define S2 1.414213562373095048801688724209698078569671875376948073176
 #define S3 1.732050807568877293527446341505872366942805253810380628055

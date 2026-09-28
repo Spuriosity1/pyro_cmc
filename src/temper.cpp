@@ -90,7 +90,7 @@ static void write_energy_group(hid_t fid,
 // Write /ssf group to an open HDF5 file from pre-gathered arrays.
 //
 // ssf_T_list:  temperatures, in the order of ssf_blocks (one per sampled rung)
-// ssf_blocks:  flat [n_corr, n_k, n_sl, n_sl, 2] per temperature
+// ssf_blocks:  flat [n_corr, n_k, 2] per temperature (sublattice-contracted)
 // ssf_sq_blocks: same for squared-correlator
 // ssf_n_samples: n_samples per temperature
 // The function sorts output ascending in T, matching plot_ssf.py expectations.
@@ -118,22 +118,22 @@ static void write_ssf_group(hid_t fid,
     hid_t grp = H5Gcreate2(fid, "/ssf",
                             H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
 
-    // --- static_corr / static_corr_2  [n_corr, n_T, n_k, n_sl, n_sl, 2] ---
+    // --- static_corr / static_corr_2  [n_corr, n_T, n_k, 2] ---
+    // The sublattice indices are contracted away inside ssf_manager::sample(),
+    // so each per-T block is [n_corr, n_k, 2] — matching anneal's output layout.
     {
-        hsize_t dims[6] = { n_corr, n_T, nk, ns, ns, 2 };
-        hid_t sp = H5Screate_simple(6, dims, nullptr);
+        hsize_t dims[4] = { n_corr, n_T, nk, 2 };
+        hid_t sp = H5Screate_simple(4, dims, nullptr);
 
-        const size_t n_flat = n_corr * nk * ns * ns * 2;
-        std::vector<double> full(n_corr * n_T * n_flat);
-        std::vector<double> full_sq(n_corr * n_T * n_flat);
+        const size_t slice = nk * 2;   // one (corr, T) slice
+        std::vector<double> full(n_corr * n_T * slice);
+        std::vector<double> full_sq(n_corr * n_T * slice);
 
         for (size_t ti = 0; ti < n_T; ti++) {
-            const auto& src    = ssf_blocks   [ord[ti]];
+            const auto& src    = ssf_blocks   [ord[ti]];  // [n_corr, n_k, 2]
             const auto& src_sq = ssf_sq_blocks[ord[ti]];
-            // Remap per-T flat [n_corr, n_k, n_sl, n_sl, 2] →
-            //         full    [n_corr, n_T, n_k, n_sl, n_sl, 2]
+            // Remap per-T flat [n_corr, n_k, 2] → full [n_corr, n_T, n_k, 2]
             for (size_t c = 0; c < n_corr; c++) {
-                const size_t slice     = nk * ns * ns * 2;
                 const size_t base_src  = c * slice;
                 const size_t base_full = (c * n_T + ti) * slice;
                 std::copy(src.begin()    + base_src,
@@ -291,7 +291,7 @@ int main(int argc, char* argv[])
         .scan<'i', size_t>();
     prog.add_argument("--prefix").default_value("run");
 
-    declare_LJ123(prog);
+    provide_physical_args(prog);
 
     try {
         prog.parse_args(argc, argv);
@@ -512,8 +512,8 @@ int main(int argc, char* argv[])
     // Rank 0 knows S_idx (computed identically on every rank) so it knows
     // exactly which ranks to recv from.
     //
-    // Buffer layout per sampled rank: [n_corr, n_k, n_sl, n_sl, 2]
-    // (same size for all because all ranks share the same lattice geometry).
+    // Buffer layout per sampled rank: [n_corr, n_k, 2] (sublattice-contracted;
+    // same size for all because all ranks share the same lattice geometry).
 
     // Compute buffer size from geometry (valid on all ranks without ssf_manager).
     const int n_sl_val = static_cast<int>(
@@ -521,8 +521,7 @@ int main(int argc, char* argv[])
     const int n_kp_val = lat.lattice.num_primitive_cells();
     const int n_corr_val = 3; // "xx","yy","zz"
     const size_t ssf_buf_size =
-        static_cast<size_t>(n_corr_val) * static_cast<size_t>(n_kp_val)
-        * static_cast<size_t>(n_sl_val) * static_cast<size_t>(n_sl_val) * 2;
+        static_cast<size_t>(n_corr_val) * static_cast<size_t>(n_kp_val) * 2;
 
     // Sampled ranks: serialize and send.
     std::vector<double> my_corr_buf, my_corr_sq_buf;

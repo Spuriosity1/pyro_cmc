@@ -43,6 +43,10 @@ inline auto provide_physical_args(argparse::ArgumentParser& prog){
         .help("Third-nearest-neighbour Heisenberg coupling strength (mutually exclusive with --Q)")
         .default_value(0.)
         .scan<'g', double>();
+    prog.add_argument("--J4")
+        .help("Fourth-nearest-neighbour Heisenberg coupling strength")
+        .default_value(0.)
+        .scan<'g', double>();
     prog.add_argument("--K")
         .help("Biquadratic interaction strength")
         .default_value(0.)
@@ -191,9 +195,14 @@ inline auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& l
             mc.define_general_coupling(pname, *nn1_pairs[k], Jzz * local_Ising + J1*coupling::Heis);
         }
     }
-    mc.define_Heisenberg_coupling("J2", pyrochlore::nn2_dist, J2);
-    mc.define_Heisenberg_coupling("J3a", pyrochlore::nn3a_dist, J3);
-    mc.define_Heisenberg_coupling("J3b", pyrochlore::nn3b_dist, J3);
+    // Further-neighbour Heisenberg shells are keyed by squared spin separation
+    // (cubic cell side = 8): J2 -> 24, J3 -> 32, J4 -> 40. The old nn3a/nn3b
+    // split folds into the single dist_sq=32 shell (both shared J3).
+    auto J4 = prog.get<double>("--J4");
+    mc.define_Heisenberg_coupling("J2", pyrochlore::neighbours_by_distance(24), J2);
+    mc.define_Heisenberg_coupling("J3", pyrochlore::neighbours_by_distance(32), J3);
+    if (J4 != 0)
+        mc.define_Heisenberg_coupling("J4", pyrochlore::neighbours_by_distance(40), J4);
 
     // Nearest-neighbour biquadratic K/2 (S_i·S_j)^2. Only registered when
     // nonzero so pure-linear runs keep biquad_bonds empty (zero overhead).
@@ -228,6 +237,7 @@ inline auto name_LJ123(const argparse::ArgumentParser& prog){
     auto J1 = prog.get<double>("--J1");
     auto J2 = prog.get<double>("--J2");
     auto J3 = resolve_J3(prog);
+    auto J4 = prog.get<double>("--J4");
     auto Jzz = prog.get<double>("--Jzz");
     auto K = prog.get<double>("--K");
     int L = prog.get<int>("L");
@@ -236,7 +246,10 @@ inline auto name_LJ123(const argparse::ArgumentParser& prog){
     name << "L="<<L<<DELIM<<
         "J1="<<J1<<DELIM<<
         "J2="<<J2<<DELIM<<
-        "J3="<<J3<<DELIM<<
+        "J3="<<J3<<DELIM;
+    if (J4 != 0)
+        name << "J4="<<J4<<DELIM;
+    name <<
         "Jzz="<<Jzz<<DELIM<<
         "K="<<K<<DELIM;
     if (prog.is_used("--Q")) {
@@ -292,5 +305,15 @@ inline std::pair<std::vector<double>, std::set<size_t>> generate_T_profile(
     return {T, idx};
 
 }
+
+inline void ensure_odir_exists(argparse::ArgumentParser& prog){
+    /// Ensuring directories exist AHEAD of time (avoids heartbreak)
+    std::string outdir_s = prog.get<std::string>("output_dir");
+    std::filesystem::path outdir(outdir_s);
+    if (! std::filesystem::exists(outdir) ){
+        throw std::runtime_error("Cannot open outdir");
+    }
+}
+
 
 

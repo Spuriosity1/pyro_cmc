@@ -114,13 +114,7 @@ int main (int argc, char *argv[]) {
     ///////////////////////////////////////////////////////////////////////////
     /// Input loading and validation
     
-
-    /// Ensuring directories exist AHEAD of time (avoids heartbreak)
-    std::string outdir_s = prog.get<std::string>("output_dir");
-    filesystem::path outdir(outdir_s);
-    if (! filesystem::exists(outdir) ){
-        throw runtime_error("Cannot open outdir");
-    }
+    ensure_odir_exists(prog);
     
     size_t seed = prog.get<size_t>("--seed");
 
