@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <iostream>
 #include <ostream>
+#include <type_traits>
 
 #include "vec3.hpp"
 #include "random_seeds.hpp"
@@ -143,8 +144,9 @@ inline uint64_t hash_true_random(uint64_t seed_id){
     return true_random_cache[seed_id];
 }
 
-
-inline auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& lat, uint64_t seed){
+template<typename T>
+requires std::is_base_of_v<CMC::InteractingHamiltonian, T>
+auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& lat, uint64_t seed){
 
     vector3::vec3d global_field;
     {
@@ -163,7 +165,7 @@ inline auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& l
 
     auto Jzz = prog.get<double>("--Jzz");
 
-    CMC::MC_runner mc(lat, hash_true_random(seed));
+    T mc(lat, hash_true_random(seed));
 
     // J1 as six sublattice-pair specs for local-frame XXZ: exactly the six
     // nn1 bonds of one tetrahedron, declared once each (de-duplicated).
@@ -212,7 +214,6 @@ inline auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& l
 
     mc.set_global_field(global_field);
 
-    mc.settings.T_ref = prog.get<double>("--T_ref");
     mc.setup_lattice();
 
     return mc;
@@ -306,13 +307,14 @@ inline std::pair<std::vector<double>, std::set<size_t>> generate_T_profile(
 
 }
 
-inline void ensure_odir_exists(argparse::ArgumentParser& prog){
+inline auto ensure_odir_exists(argparse::ArgumentParser& prog){
     /// Ensuring directories exist AHEAD of time (avoids heartbreak)
     std::string outdir_s = prog.get<std::string>("output_dir");
     std::filesystem::path outdir(outdir_s);
     if (! std::filesystem::exists(outdir) ){
         throw std::runtime_error("Cannot open outdir");
     }
+    return outdir;
 }
 
 

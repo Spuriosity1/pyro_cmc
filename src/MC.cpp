@@ -30,7 +30,7 @@ namespace CMC {
     }
 
 
-    void MC_runner::setup_lattice(){
+    void InteractingHamiltonian::setup_lattice(){
         auto& spins = lat->get_objects<HeisenbergSpin>();
         const int Np = lat->lattice.num_primitive_cells();
         const int num_sl = static_cast<int>(
@@ -104,8 +104,7 @@ namespace CMC {
     }
 
 
-
-    void MC_runner::randomize_spins(){
+    void InteractingHamiltonian::randomize_spins(){
         for (auto& s : lat->get_objects<HeisenbergSpin>()){
             vector3::vec3d v{normal_dist(rng), normal_dist(rng), normal_dist(rng)};
             double n = norm(v);
@@ -120,7 +119,7 @@ namespace CMC {
     }
 
 
-    void MC_runner::define_general_coupling(const std::string& name,
+    void InteractingHamiltonian::define_general_coupling(const std::string& name,
             const std::vector<std::vector<ipos_t>>& rel_vecs,
             const vector3::mat33<double>& J)
     {
@@ -132,7 +131,7 @@ namespace CMC {
     }
 
 
-    void MC_runner::define_Heisenberg_coupling(const std::string& name,
+    void InteractingHamiltonian::define_Heisenberg_coupling(const std::string& name,
             const std::vector<std::vector<ipos_t>>& rel_vecs,
             const double J
             ){
@@ -143,7 +142,7 @@ namespace CMC {
         heis_coupling_specs.push_back({name, rel_vecs, J});
     }
 
-    void MC_runner::define_biquad_coupling(const std::string& name,
+    void InteractingHamiltonian::define_biquad_coupling(const std::string& name,
             const std::vector<std::vector<ipos_t>>& rel_vecs,
             const double K
             ){
@@ -156,11 +155,11 @@ namespace CMC {
     }
 
 
-    void MC_runner::set_global_field(const vector3::vec3<double>& h){
+    void InteractingHamiltonian::set_global_field(const vector3::vec3<double>& h){
         global_field = h;
     }
 
-    vector3::vec3d MC_runner::get_global_field() const {
+    vector3::vec3d InteractingHamiltonian::get_global_field() const {
         return global_field;
     }
 
@@ -170,7 +169,7 @@ namespace CMC {
         for (auto& s : spin_list) {h += s->S;}
     }
 
-    vector3::vec3d MC_runner::local_linear_field(const HeisenbergSpin *spin) const
+    vector3::vec3d InteractingHamiltonian::local_linear_field(const HeisenbergSpin *spin) const
     {
         vector3::vec3d h_loc{0,0,0};
         for (const auto& shell : spin->general_bonds) {
@@ -187,7 +186,7 @@ namespace CMC {
     }
 
 
-    vector3::vec3d MC_runner::local_field(const HeisenbergSpin *spin) const 
+    vector3::vec3d InteractingHamiltonian::local_field(const HeisenbergSpin *spin) const 
     {
         auto h_loc = local_linear_field(spin);
         for (const auto& shell : spin->biquad_bonds) {
@@ -200,7 +199,7 @@ namespace CMC {
         return h_loc;
     }
 
-    double MC_runner::biquad_site_energy(const HeisenbergSpin* spin,
+    double InteractingHamiltonian::biquad_site_energy(const HeisenbergSpin* spin,
             const vector3::vec3d& S) const
     {
         double E = 0;
@@ -457,7 +456,7 @@ namespace CMC {
         return accepted;
     }
 
-    double MC_runner::total_energy_per_unit_cell() const{
+    double InteractingHamiltonian::total_energy_per_unit_cell() const{
         double E = 0;
         for (const auto& s : std::get<std::vector<HeisenbergSpin>>(lat->objects)){
             E += 0.5 * dot(s.S, local_linear_field(&s));
@@ -467,7 +466,7 @@ namespace CMC {
         return E / lat->lattice.num_primitive_cells();
     }
 
-    void MC_runner::rebind(Lattice& new_lat){
+    void InteractingHamiltonian::rebind(Lattice& new_lat){
         assert(new_lat.get_objects<HeisenbergSpin>().size()
                 == lat->get_objects<HeisenbergSpin>().size());
         lat = &new_lat;

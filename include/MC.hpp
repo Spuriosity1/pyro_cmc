@@ -116,17 +116,12 @@ struct MC_parameters {
     double u_atol = 1e-16;
 };
 
+
 /**
- * @brief Monte Carlo driver for classical spin simulations.
- * The internal bond representation stores interactions in the form
- *
- *   \sum J_{ij}^{a b} S_i^a S_j^b 
- * + \sum Jh_{ij}      S_i^a S_j^a 
- * + \sum K_{ij}/2    (S_i^a S_j^a)^2
- *
- * Heisenberg interactions are stored separately for better performance.
+ * @brief Base class containing the coupling layout.
  */
-class MC_runner {
+class InteractingHamiltonian {
+    protected:
     std::vector<GeneralCouplingSpec> general_coupling_specs;
     std::vector<HeisenbergCouplingSpec> heis_coupling_specs;
     std::vector<BiquadraticCouplingSpec> biquad_coupling_specs;
@@ -137,15 +132,17 @@ class MC_runner {
 
     vector3::vec3<double> global_field={0,0,0};
 
-    Lattice* lat;
 
-    std::uniform_int_distribution<size_t> site_dist;
+    Lattice* lat;
+    XoshiroCpp::Xoroshiro128PlusPlus rng;
+
+    // RNG generators for convenience
     std::normal_distribution<double> normal_dist;
+    std::uniform_int_distribution<size_t> site_dist;
     std::exponential_distribution<double> exp_dist;
     std::uniform_real_distribution<double> rand01;
 
-    XoshiroCpp::Xoroshiro128PlusPlus rng;
-
+    // helper functions
     vector3::vec3d local_linear_field(const HeisenbergSpin* spin) const;
     vector3::vec3d local_field(const HeisenbergSpin* spin) const;
 
@@ -156,14 +153,11 @@ class MC_runner {
     double biquad_site_energy(const HeisenbergSpin* spin,
             const vector3::vec3d& S) const;
 
-public:
-    MC_parameters settings;
-
-    MC_runner(Lattice &lat_, size_t seed)
-        : lat(&lat_),
+    public:
+    InteractingHamiltonian(Lattice& lat_, size_t seed) :
+        lat(&lat_), rng(seed),
           site_dist(0, lat_.get_objects<HeisenbergSpin>().size()-1),
-          rand01(0,1),
-          rng(seed)
+          rand01(0,1)
     {}
 
     // Repoints this runner at a different (but congruent) Lattice — O(1), no
@@ -198,6 +192,26 @@ public:
     // local field undefined for field-based moves). Overwritten by an explicit
     // initial state, e.g. init_spiral_state.
     void randomize_spins();
+};
+
+/**
+ * @brief Monte Carlo driver for classical spin simulations.
+ * The internal bond representation stores interactions in the form
+ *
+ *   \sum J_{ij}^{a b} S_i^a S_j^b 
+ * + \sum Jh_{ij}      S_i^a S_j^a 
+ * + \sum K_{ij}/2    (S_i^a S_j^a)^2
+ *
+ * Heisenberg interactions are stored separately for better performance.
+ */
+class MC_runner : public InteractingHamiltonian {
+
+public:
+    MC_parameters settings;
+
+    MC_runner(Lattice &lat_, size_t seed)
+        : InteractingHamiltonian(lat_, seed)
+    {}
 
     size_t local_overrelax(double T, HeisenbergSpin* spin); //*
     size_t local_Metropolis(double T, HeisenbergSpin* spin); // ** 

@@ -347,7 +347,8 @@ int main(int argc, char* argv[])
     // Lattice + MC construction.  Each rank uses a unique seed offset so that
     // replicas start with independent spin configurations.
     auto lat = build_pyro_lat(prog);
-    auto mc  = build_J1J2J3_h(prog, lat, seed + static_cast<size_t>(replica_id));
+    auto mc  = build_J1J2J3_h<CMC::MC_runner>(prog, lat, seed + static_cast<size_t>(replica_id));
+    mc.settings.T_ref = prog.get<double>("--T_ref");
 
     if (prog.get<bool>("--init_spiral")) {
         if (!prog.is_used("--Q")) {

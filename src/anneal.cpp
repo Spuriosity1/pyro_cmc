@@ -114,7 +114,7 @@ int main (int argc, char *argv[]) {
     ///////////////////////////////////////////////////////////////////////////
     /// Input loading and validation
     
-    ensure_odir_exists(prog);
+    auto outdir = ensure_odir_exists(prog);
     
     size_t seed = prog.get<size_t>("--seed");
 
@@ -132,7 +132,8 @@ int main (int argc, char *argv[]) {
     double T = T_hot;
 
     auto lat = build_pyro_lat(prog);
-    auto mc = build_J1J2J3_h(prog, lat, seed);
+    auto mc = build_J1J2J3_h<CMC::MC_runner>(prog, lat, seed);
+    mc.settings.T_ref = prog.get<double>("--T_ref");
 
     if (prog.get<bool>("--init_spiral")) {
         if (!prog.is_used("--Q"))
