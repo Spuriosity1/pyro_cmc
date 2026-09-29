@@ -472,6 +472,110 @@ namespace CMC {
         lat = &new_lat;
     }
 
+    size_t Minimiser::align_spin(HeisenbergSpin* spin) {
+        vector3::vec3d g = grad(spin);          // energy gradient = "field" to oppose
+        double n = sqrt(vector3::dot(g, g));
+        if (n < settings.hloc_atol) return 0;   // undefined direction; leave it
+        spin->S = -g / n;
+        return 1;
+    }
+
+    MinResult Minimiser::minimise_adaptive(int max_iter, double dt0,
+                                double atol, double rtol) {
+        constexpr double safety = 0.9, min_scale = 0.2, max_scale = 5.0;
+        constexpr double dt_min = 1e-12, dt_max = 1e2;
+
+        auto& spins = lat->get_objects<HeisenbergSpin>();
+        const size_t n = spins.size();
+        S0.resize(n); Se.resize(n);
+
+        MinResult res;
+        double dt = dt0;
+
+        double gmax0 = descent_direction(spins, k1); // k1 = -g⊥(S0)
+        res.fevals++;
+        const double gtol = atol + rtol * gmax0;
+        res.grad_max = gmax0;
+
+        for (res.iters = 0; res.iters < max_iter; ) {
+            if (res.grad_max <= gtol) { res.converged = true; break; }
+
+            for (size_t i = 0; i < n; ++i) S0[i] = spins[i].S;
+
+            // Euler predictor (order 1), written into the lattice so the
+            // gradient can be re-evaluated there.
+            for (size_t i = 0; i < n; ++i) {
+                Se[i] = retract(S0[i], k1[i], dt);
+                spins[i].S = Se[i];
+            }
+            descent_direction(spins, k2); // k2 = -g⊥(Se)
+            res.fevals++;
+
+            // Heun corrector (order 2) and scaled error estimate.
+            double err2 = 0.0;
+            for (size_t i = 0; i < n; ++i) {
+                vector3::vec3d avg = 0.5 * (k1[i] + k2[i]);
+                vector3::vec3d Sh  = retract(S0[i], avg, dt);
+                vector3::vec3d e   = Sh - Se[i];
+                double sc = atol + rtol * sqrt(vector3::dot(Sh, Sh)); // |S|≈1
+                err2 += vector3::dot(e, e) / (sc * sc);
+                spins[i].S = Sh; // tentatively accept the high-order state
+            }
+            double err = sqrt(err2 / (3.0 * n)); // RMS over all components
+
+            if (err <= 1.0 || dt <= dt_min) {
+                // Accept: advance and recompute the gradient at the new state.
+                res.iters++;
+                res.grad_max = descent_direction(spins, k1);
+                res.fevals++;
+                res.final_step = dt;
+                if (settings.verbosity >= 2 &&
+                    (res.iters <= 10 || res.iters % 50 == 0)) {
+                    printf("  [adaptive] iter %5d  dt=%.3e  |g|=%.3e  E=%.6f\n",
+                           res.iters, dt, res.grad_max,
+                           total_energy_per_unit_cell());
+                }
+            } else {
+                // Reject: restore and shrink dt (no gradient recompute needed;
+                // k1 at S0 is still valid).
+                for (size_t i = 0; i < n; ++i) spins[i].S = S0[i];
+            }
+
+            // I-controller: p=1 embedded error -> exponent 1/(p+1)=1/2.
+            double scale = safety * ((err > 0) ? std::pow(err, -0.5) : max_scale);
+            scale = std::clamp(scale, min_scale, max_scale);
+            dt = std::clamp(dt * scale, dt_min, dt_max);
+        }
+
+        res.E = total_energy_per_unit_cell();
+        return res;
+    }
+
+
+    MinResult Minimiser::minimise_align(int max_iter,
+                             double atol, double rtol) {
+        auto& spins = lat->get_objects<HeisenbergSpin>();
+        MinResult res;
+        double gmax0 = descent_direction(spins, dS);
+        res.fevals++;
+        const double gtol = atol + rtol * gmax0;
+
+        for (res.iters = 0; res.iters < max_iter; ++res.iters) {
+            for (auto& s : spins) align_spin(&s);
+            res.grad_max = descent_direction(spins, dS);
+            res.fevals++;
+            if (settings.verbosity >= 2 &&
+                (res.iters < 10 || res.iters % 50 == 0)) {
+                printf("  [align] sweep %5d  |g|=%.3e  E=%.6f\n",
+                       res.iters, res.grad_max, total_energy_per_unit_cell());
+            }
+            if (res.grad_max <= gtol) { res.converged = true; ++res.iters; break; }
+        }
+        res.E = total_energy_per_unit_cell();
+        return res;
+    }
+
+
     void save_ft_spin_state(Lattice& lat, const std::filesystem::path& file_path){
         hid_t file = h5_create_trunc_nolock(file_path.string());
 

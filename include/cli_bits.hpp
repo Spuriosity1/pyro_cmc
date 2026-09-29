@@ -119,9 +119,7 @@ inline double resolve_J3(const argparse::ArgumentParser& prog) {
         double J1 = prog.get<double>("--J1");
         double J2_eff = prog.get<double>("--J2") / std::abs(J1);
         double J4_eff = prog.get<double>("--J4") / std::abs(J1);
-        double J3 = J3_from_Qz(J2_eff, J4_eff, Qz) * std::abs(J1);
-        std::cout<<"Calculated J3="<<J3<<std::endl;
-        return J3;
+        return J3_from_Qz(J2_eff, J4_eff, Qz) * std::abs(J1);
     }
     return prog.get<double>("--J3");
 }

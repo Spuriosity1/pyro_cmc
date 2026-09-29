@@ -302,7 +302,7 @@ def main():
                             lw=0,
                             capsize=3, elinewidth=1, zorder=2)
             else:
-                ax.plot(x_sorted, I_sorted, 'o', alpha=0.1, label=label, color=color, ms=4, zorder=2)
+                ax.plot(x_sorted, I_sorted, 'o', alpha=0.9, label=label, color=color, ms=4, zorder=2)
         plotted_any = True
 
     if not plotted_any:

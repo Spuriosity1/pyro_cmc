@@ -313,13 +313,7 @@ public:
     // terms; the biquadratic contribution is linearised about the current S, so
     // for K≠0 it is a (still strongly descending) fixed-point iteration rather
     // than an exact solve. Returns 1 if the spin moved, 0 otherwise.
-    size_t align_spin(HeisenbergSpin* spin) {
-        vector3::vec3d g = grad(spin);          // energy gradient = "field" to oppose
-        double n = sqrt(vector3::dot(g, g));
-        if (n < settings.hloc_atol) return 0;   // undefined direction; leave it
-        spin->S = -g / n;
-        return 1;
-    }
+    size_t align_spin(HeisenbergSpin* spin); 
 
     // -------- fixed-step projected gradient descent (legacy) -----------------
     // Kept for reference / regression testing. Prefer minimise_adaptive().
@@ -328,6 +322,23 @@ public:
         descent_direction(spins, dS);
         for (size_t i = 0; i < spins.size(); ++i)
             spins[i].S = retract(spins[i].S, dS[i], step);
+    }
+
+    /**
+     * @brief Adds gaussian noise to spin config and renormalises
+     */
+    void fuzz_spins(double amplitude) {
+        auto& spins = lat->get_objects<HeisenbergSpin>();
+        for (size_t i = 0; i < spins.size(); ++i){
+            auto& S = spins[i].S;
+            S[0] += this->normal_dist(rng)*amplitude;
+            S[1] += this->normal_dist(rng)*amplitude;
+            S[2] += this->normal_dist(rng)*amplitude;
+
+            double a = sqrt(dot(S,S));
+            S = fabs(a) > 1e-12 ? S/a : vector3::vec3d{0,0,1};
+        }
+        
     }
 
     /**
@@ -347,75 +358,7 @@ public:
      * @param dt0  initial step guess (auto-corrected within a few iterations)
      */
     MinResult minimise_adaptive(int max_iter, double dt0,
-                                double atol = 1e-8, double rtol = 1e-6) {
-        constexpr double safety = 0.9, min_scale = 0.2, max_scale = 5.0;
-        constexpr double dt_min = 1e-12, dt_max = 1e2;
-
-        auto& spins = lat->get_objects<HeisenbergSpin>();
-        const size_t n = spins.size();
-        S0.resize(n); Se.resize(n);
-
-        MinResult res;
-        double dt = dt0;
-
-        double gmax0 = descent_direction(spins, k1); // k1 = -g⊥(S0)
-        res.fevals++;
-        const double gtol = atol + rtol * gmax0;
-        res.grad_max = gmax0;
-
-        for (res.iters = 0; res.iters < max_iter; ) {
-            if (res.grad_max <= gtol) { res.converged = true; break; }
-
-            for (size_t i = 0; i < n; ++i) S0[i] = spins[i].S;
-
-            // Euler predictor (order 1), written into the lattice so the
-            // gradient can be re-evaluated there.
-            for (size_t i = 0; i < n; ++i) {
-                Se[i] = retract(S0[i], k1[i], dt);
-                spins[i].S = Se[i];
-            }
-            descent_direction(spins, k2); // k2 = -g⊥(Se)
-            res.fevals++;
-
-            // Heun corrector (order 2) and scaled error estimate.
-            double err2 = 0.0;
-            for (size_t i = 0; i < n; ++i) {
-                vector3::vec3d avg = 0.5 * (k1[i] + k2[i]);
-                vector3::vec3d Sh  = retract(S0[i], avg, dt);
-                vector3::vec3d e   = Sh - Se[i];
-                double sc = atol + rtol * sqrt(vector3::dot(Sh, Sh)); // |S|≈1
-                err2 += vector3::dot(e, e) / (sc * sc);
-                spins[i].S = Sh; // tentatively accept the high-order state
-            }
-            double err = sqrt(err2 / (3.0 * n)); // RMS over all components
-
-            if (err <= 1.0 || dt <= dt_min) {
-                // Accept: advance and recompute the gradient at the new state.
-                res.iters++;
-                res.grad_max = descent_direction(spins, k1);
-                res.fevals++;
-                res.final_step = dt;
-                if (settings.verbosity >= 2 &&
-                    (res.iters <= 10 || res.iters % 50 == 0)) {
-                    printf("  [adaptive] iter %5d  dt=%.3e  |g|=%.3e  E=%.6f\n",
-                           res.iters, dt, res.grad_max,
-                           total_energy_per_unit_cell());
-                }
-            } else {
-                // Reject: restore and shrink dt (no gradient recompute needed;
-                // k1 at S0 is still valid).
-                for (size_t i = 0; i < n; ++i) spins[i].S = S0[i];
-            }
-
-            // I-controller: p=1 embedded error -> exponent 1/(p+1)=1/2.
-            double scale = safety * ((err > 0) ? std::pow(err, -0.5) : max_scale);
-            scale = std::clamp(scale, min_scale, max_scale);
-            dt = std::clamp(dt * scale, dt_min, dt_max);
-        }
-
-        res.E = total_energy_per_unit_cell();
-        return res;
-    }
+                                double atol = 1e-8, double rtol = 1e-6);
 
     /**
      * @brief Best-alignment (Gauss–Seidel) sweeps.
@@ -428,27 +371,7 @@ public:
      * `atol + rtol·g0`.
      */
     MinResult minimise_align(int max_iter,
-                             double atol = 1e-8, double rtol = 1e-6) {
-        auto& spins = lat->get_objects<HeisenbergSpin>();
-        MinResult res;
-        double gmax0 = descent_direction(spins, dS);
-        res.fevals++;
-        const double gtol = atol + rtol * gmax0;
-
-        for (res.iters = 0; res.iters < max_iter; ++res.iters) {
-            for (auto& s : spins) align_spin(&s);
-            res.grad_max = descent_direction(spins, dS);
-            res.fevals++;
-            if (settings.verbosity >= 2 &&
-                (res.iters < 10 || res.iters % 50 == 0)) {
-                printf("  [align] sweep %5d  |g|=%.3e  E=%.6f\n",
-                       res.iters, res.grad_max, total_energy_per_unit_cell());
-            }
-            if (res.grad_max <= gtol) { res.converged = true; ++res.iters; break; }
-        }
-        res.E = total_energy_per_unit_cell();
-        return res;
-    }
+                             double atol = 1e-8, double rtol = 1e-6); 
 
 
 };
@@ -468,6 +391,15 @@ public:
 
 void save_spin_state(Lattice& lat, const std::filesystem::path& file_path);
 void save_ft_spin_state(Lattice& lat, const std::filesystem::path& file_path);
+
+inline std::ostream& operator<<(std::ostream& os, const MinResult& mr) {
+    os << "Minimisation results:" <<
+        "\nConverged?\t"<< (mr.converged ? "yes" : "no") <<
+        "\nE=        \t"<< mr.E <<
+        "\nfevals=   \t"<< mr.fevals <<
+        "\niters=    \t"<<mr.iters<<std::endl;
+    return os;
+}
 
 
 }

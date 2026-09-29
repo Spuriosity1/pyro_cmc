@@ -31,15 +31,19 @@ struct LTBond {
 static vector<LTBond> build_bonds(
         LatticeIndexing& lat,
         const vector<ipos_t>& sl_pos,
-        double J1, double J2, double J3, double Jzz)
+        double J1, double J2, double J3, double J4, double Jzz)
 {
-    using DistTable = const vector<vector<ipos_t>>;
-    // {coupling strength, distance table, is_J1 (XXZ applies only to J1)}
-    const struct { double j; DistTable* dist; bool xxz; } specs[] = {
-        {J1, &pyrochlore::nn1_dist,  true},
-        {J2, &pyrochlore::nn2_dist,  false},
-        {J3, &pyrochlore::nn3a_dist, false},
-        {J3, &pyrochlore::nn3b_dist, false},
+    // Coupling shells keyed by squared spin separation (cubic cell side = 8):
+    // J1 -> 8, J2 -> 24, J3 -> 32, J4 -> 40. J1 keeps its hand table because the
+    // XXZ frame is indexed per sublattice pair; the further shells come from the
+    // separation generator (matches build_J1J2J3_h, and folds the old nn3a/nn3b
+    // split into the single dist_sq=32 shell). {strength, table, xxz-applies}.
+    struct Spec { double j; vector<vector<ipos_t>> dist; bool xxz; };
+    const Spec specs[] = {
+        {J1, pyrochlore::nn1_dist,                   true},
+        {J2, pyrochlore::neighbours_by_distance(24), false},
+        {J3, pyrochlore::neighbours_by_distance(32), false},
+        {J4, pyrochlore::neighbours_by_distance(40), false},
     };
 
     const int n_sl = static_cast<int>(sl_pos.size());
@@ -49,7 +53,7 @@ static vector<LTBond> build_bonds(
         if (j == 0.0) continue;
         for (int sl = 0; sl < n_sl; sl++) {
             const int pyro_sl = sl % 4;
-            for (const auto& v : (*dist)[pyro_sl]) {
+            for (const auto& v : dist[pyro_sl]) {
                 ipos_t ref = sl_pos[sl] + v;
                 lat.get_supercell_IDX(ref);
                 int beta = -1;
@@ -109,6 +113,7 @@ int main(int argc, char* argv[])
     const double J1    = prog.get<double>("--J1");
     const double J2    = prog.get<double>("--J2");
     const double J3    = resolve_J3(prog);
+    const double J4    = prog.get<double>("--J4");
     const double Jzz = prog.get<double>("--Jzz");
 
     // Build LatticeIndexing directly — no Supercell<HeisenbergSpin> needed.
@@ -132,7 +137,7 @@ int main(int argc, char* argv[])
 
     const int Nk           = lat.num_primitive_cells();
     const ivec3_t k_dims   = lat.size();
-    const auto bonds       = build_bonds(lat, sl_pos, J1, J2, J3, Jzz);
+    const auto bonds       = build_bonds(lat, sl_pos, J1, J2, J3, J4, Jzz);
 
     // -----------------------------------------------------------------------
     // Sweep BZ: build M(k) and track minimum eigenvalue
