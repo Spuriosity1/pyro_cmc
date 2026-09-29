@@ -43,8 +43,13 @@ def load_ssf_variance(path):
             var_inter = reshape_var(ssf["var_inter"][:], corr_lookup, k_dims)
         if "var_intra" in ssf:
             var_intra = reshape_var(ssf["var_intra"][:], corr_lookup, k_dims)
-        energy = f["/energy"]
-        n_seeds = int(energy["n_seeds"][()]) if "n_seeds" in energy else None
+        # minimise output has no /energy group (single T=0 snapshot); a raw
+        # single-seed run has one but no n_seeds. Either way n_seeds is None,
+        # which disables the seed-to-seed error bars and falls back to plain
+        # markers below.
+        energy = f["/energy"] if "energy" in f else None
+        n_seeds = (int(energy["n_seeds"][()])
+                   if energy is not None and "n_seeds" in energy else None)
     return var_inter, var_intra, n_seeds
 
 

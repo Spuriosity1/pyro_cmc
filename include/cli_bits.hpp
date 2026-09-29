@@ -58,8 +58,8 @@ inline auto provide_physical_args(argparse::ArgumentParser& prog){
     //     .scan<'g', double>();
     
     prog.add_argument("--Q")
-        .help("Nonzero spiral wavevector component in units of 2pi/a_cubic; J3 is set to minimise spiral energy "
-              "(mutually exclusive with --J3). Rounded to nearest supercell-commensurate value.")
+        .help("Nonzero spiral wavevector component in units of 2pi/a_cubic; J3 is set to minimise the spiral "
+              "energy given J2 and J4 (mutually exclusive with --J3). Rounded to nearest supercell-commensurate value.")
         .scan<'g', double>();
     prog.add_argument("--spiral_axis", "-x")
         .help("Axis [0,1,2] (x,y,z) that the spiral wavevector --Q points along")
@@ -78,12 +78,16 @@ inline auto provide_physical_args(argparse::ArgumentParser& prog){
         .scan<'g', double>();
 }
 
-// Compute J3 from J2 and Qz that minimises the spiral energy (assumes |J1|=1).
-// Qz is in units of 2pi/a_cubic.
-inline double J3_from_Qz(double J2, double Qz) {
+// Compute the J3 that makes a (0,0,Q) spiral stationary in the single-Q spiral
+// energy, given J2 and J4 (assumes the ferromagnetic convention |J1|=1). Qz is
+// in units of 2pi/a_cubic. Only J3 enters the cos(4q) term, so the stationarity
+// condition stays linear in J3 and inverts in closed form. J4 adds a cos(6q)
+// contribution, hence the c^2 term below. Derivation: scripts/spiral_Q.sage.
+// At J4=0 this reduces to the original (-4J2 + (1-2J2)/cos2q)/8.
+inline double J3_from_Qz(double J2, double J4, double Qz) {
     Qz *= 2 * M_PI / 8; // this 8 is from the conventional pyrochlore cell size
-
-    return (-4*J2 + 1./std::cos(2*Qz) - 2.*J2/std::cos(2*Qz))/8.;
+    const double c = std::cos(2*Qz);
+    return -(12*J4*c*c + 4*J2*c + 2*J2 - 2*J4 - 1) / (8*c);
 }
 
 // Round Qz (in units of 1/a_cubic) to the nearest value commensurate with an
@@ -114,7 +118,8 @@ inline double resolve_J3(const argparse::ArgumentParser& prog) {
         double Qz =prog.get<double>("--Q");
         double J1 = prog.get<double>("--J1");
         double J2_eff = prog.get<double>("--J2") / std::abs(J1);
-        double J3 = J3_from_Qz(J2_eff, Qz) * std::abs(J1);
+        double J4_eff = prog.get<double>("--J4") / std::abs(J1);
+        double J3 = J3_from_Qz(J2_eff, J4_eff, Qz) * std::abs(J1);
         std::cout<<"Calculated J3="<<J3<<std::endl;
         return J3;
     }

@@ -16,11 +16,6 @@ def load_file(path):
         recip      = f["/geometry/recip_vectors"][:]   # (3,3) rows are b0,b1,b2
         index_cell = f["/geometry/index_cell"][:]
 
-        T_list = f["/energy/T_list"][:]
-        E      = f["/energy/E"][:]
-        E2     = f["/energy/E2"][:]
-        n_E    = f["/energy/n_samples"][:]
-
         raw          = f["/ssf/static_corr"][:]   # [n_corr, n_T, n_k, 2]
         corr_lookup  = [s.decode() if isinstance(s, bytes) else s
                         for s in f["/ssf/corr_lookup"][:]]
@@ -29,6 +24,19 @@ def load_file(path):
         n_spins      = int(f["/ssf"].attrs["n_spins"])
         ssf_T        = f["/ssf/T_list"][:]        # sorted ascending
         n_ssf        = f["/ssf/n_samples"][:]
+
+        # anneal/fieldcool write a thermodynamic /energy group; minimise emits a
+        # single T=0 gradient-descent snapshot with no such group. Fall back to
+        # the SSF's own temperature list and leave E/E2/n_E as NaN so the SSF
+        # plotting path (which never touches them) still works on that output.
+        if "energy" in f:
+            T_list = f["/energy/T_list"][:]
+            E      = f["/energy/E"][:]
+            E2     = f["/energy/E2"][:]
+            n_E    = f["/energy/n_samples"][:]
+        else:
+            T_list = ssf_T
+            E = E2 = n_E = np.full(ssf_T.shape, np.nan)
 
     # static_corr is already the sublattice-contracted scalar S(q) (the phase
     # fold Σ_{mu,nu} exp(+i q·(r_mu-r_nu)) conj(Ã_mu) Ã_nu is done in the C++
@@ -156,9 +164,9 @@ def plot_ssf(ax, file, args, title=""):
     data = np.fft.fftshift(data_3d[t_idx][idx])
     data /= n_spins
 
-    vmax = 10**args.vmax
+    vmax = args.vmax
     if args.vmin:
-        vmin = 10**args.vmin
+        vmin = args.vmin
     else:
         vmin = max(data.min(), 1e-6 * vmax) if args.log else 0
     norm = (mcolors.LogNorm(vmin=vmin, vmax=vmax) if args.log
@@ -180,6 +188,10 @@ def plot_ssf(ax, file, args, title=""):
 
 def plot_energy(args):
     _, _, T_list, E, E2, n_E, *_ = load_file(args.file)
+
+    if not np.all(np.isfinite(n_E)):
+        sys.exit("No /energy group in this file (minimise output?); "
+                 "nothing to plot for energy/heat-capacity.")
 
     E_mean  = E / n_E
     E2_mean = E2 / n_E

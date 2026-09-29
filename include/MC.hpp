@@ -2,12 +2,15 @@
 #include "H5Ipublic.h"
 #include "H5Ppublic.h"
 #include "H5Tpublic.h"
+#include "vec3.hpp"
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <map>
 #include <vector>
 #include <string>
 #include <cassert>
+#include <cmath>
+#include <algorithm>
 
 // LatticeLab 2
 #include <lattice_lib/supercell.hpp>
@@ -111,6 +114,13 @@ struct BiquadraticCouplingSpec {
 
 struct MC_parameters {
     double T_ref=1.0;
+    size_t verbosity = 2;
+    double hloc_atol = 1e-16;
+    double u_atol = 1e-16;
+};
+
+
+struct Min_parameters {
     size_t verbosity = 2;
     double hloc_atol = 1e-16;
     double u_atol = 1e-16;
@@ -222,6 +232,225 @@ public:
     size_t sweep_local_Metropolis(double T, size_t n_overrelax=1);
     size_t sweep_lifted_Metropolis(double T, size_t n_overrelax=1);
     size_t sweep_lifted_Metropolis_rot(double T, size_t n_overrelax=1);
+};
+
+
+
+/**
+ * @brief Outcome of a minimisation run.
+ */
+struct MinResult {
+    int    iters      = 0;      // accepted steps (adaptive) or sweeps (align)
+    int    fevals     = 0;      // gradient evaluations performed
+    double E          = 0.0;    // final energy per unit cell
+    double grad_max   = 0.0;    // final max tangential gradient norm
+    double final_step = 0.0;    // last accepted step size (adaptive only)
+    bool   converged  = false;  // hit the tolerance before max_iter
+};
+
+/**
+ * @brief Zero-temperature energy minimiser for a Lattice of Heisenberg spins.
+ *
+ * The energy gradient at site i is `local_field(i) - global_field`; the physical
+ * degrees of freedom are unit vectors, so all optimisers work with the
+ * *tangential* (Riemannian) gradient g⊥ = g - (g·S) S and retract back to the
+ * sphere by renormalising after each move.
+ */
+class Minimiser : public InteractingHamiltonian {
+
+    // Scratch buffers reused across iterations to avoid per-step allocation.
+    std::vector<vector3::vec3d> S0;   // configuration at the start of a trial step
+    std::vector<vector3::vec3d> k1;   // -g⊥ at S0
+    std::vector<vector3::vec3d> k2;   // -g⊥ at the Euler predictor
+    std::vector<vector3::vec3d> Se;   // Euler predictor (low order)
+    std::vector<vector3::vec3d> dS;   // legacy fixed-step buffer
+
+    // Full energy gradient at site i, including the external field.
+    vector3::vec3d grad(const HeisenbergSpin* spin) const {
+        return local_field(spin) - global_field;
+    }
+
+    // Tangential (Riemannian) gradient: strip the radial part that a unit-length
+    // constraint cannot act on. Returns g⊥ and reports its norm via `n`.
+    static vector3::vec3d tangential(const vector3::vec3d& g,
+                                     const vector3::vec3d& S, double& n) {
+        vector3::vec3d gt = g - vector3::dot(g, S) * S;
+        n = sqrt(vector3::dot(gt, gt));
+        return gt;
+    }
+
+    // Retract p = S + h*d back onto the unit sphere. A vanishing result carries
+    // no direction, so the spin is left untouched rather than yielding NaN.
+    static vector3::vec3d retract(const vector3::vec3d& S,
+                                  const vector3::vec3d& d, double h) {
+        vector3::vec3d p = S + h * d;
+        double n = sqrt(vector3::dot(p, p));
+        return (n < 1e-14) ? S : p / n;
+    }
+
+    // Fill `dst` with -g⊥ for every spin at the current lattice configuration
+    // and return the largest tangential gradient norm (the convergence measure).
+    double descent_direction(const std::vector<HeisenbergSpin>& spins,
+                             std::vector<vector3::vec3d>& dst) {
+        double gmax = 0.0;
+        dst.resize(spins.size());
+        for (size_t i = 0; i < spins.size(); ++i) {
+            double n;
+            dst[i] = -tangential(grad(&spins[i]), spins[i].S, n);
+            gmax = std::max(gmax, n);
+        }
+        return gmax;
+    }
+
+public:
+    Min_parameters settings;
+
+    Minimiser(Lattice& lat_, size_t seed) : InteractingHamiltonian(lat_, seed){}
+
+    // -------- best-alignment (Gauss–Seidel / T=0 heat bath) ------------------
+    // Point one spin antiparallel to its instantaneous local field, i.e. to the
+    // exact single-site energy minimum. This is exact for bilinear + Zeeman
+    // terms; the biquadratic contribution is linearised about the current S, so
+    // for K≠0 it is a (still strongly descending) fixed-point iteration rather
+    // than an exact solve. Returns 1 if the spin moved, 0 otherwise.
+    size_t align_spin(HeisenbergSpin* spin) {
+        vector3::vec3d g = grad(spin);          // energy gradient = "field" to oppose
+        double n = sqrt(vector3::dot(g, g));
+        if (n < settings.hloc_atol) return 0;   // undefined direction; leave it
+        spin->S = -g / n;
+        return 1;
+    }
+
+    // -------- fixed-step projected gradient descent (legacy) -----------------
+    // Kept for reference / regression testing. Prefer minimise_adaptive().
+    void gradient_descent(double step){
+        auto& spins = lat->get_objects<HeisenbergSpin>();
+        descent_direction(spins, dS);
+        for (size_t i = 0; i < spins.size(); ++i)
+            spins[i].S = retract(spins[i].S, dS[i], step);
+    }
+
+    /**
+     * @brief Adaptive-step projected gradient flow.
+     *
+     * Integrates the dissipative flow dS/dt = -g⊥ on the unit sphere with an
+     * embedded Euler/Heun pair (orders 1 and 2). The Heun result is accepted;
+     * their difference estimates the local error, which an I-controller keeps
+     * within the mixed tolerance `atol + rtol·|S|`. The step dt therefore grows
+     * on the smooth basin floor and shrinks through stiff/steep regions
+     * automatically — no hand-tuned step_size.
+     *
+     * Terminates when the largest tangential gradient falls below
+     * `atol + rtol·g0` (g0 = initial gradient) or after `max_iter` accepted
+     * steps, whichever comes first.
+     *
+     * @param dt0  initial step guess (auto-corrected within a few iterations)
+     */
+    MinResult minimise_adaptive(int max_iter, double dt0,
+                                double atol = 1e-8, double rtol = 1e-6) {
+        constexpr double safety = 0.9, min_scale = 0.2, max_scale = 5.0;
+        constexpr double dt_min = 1e-12, dt_max = 1e2;
+
+        auto& spins = lat->get_objects<HeisenbergSpin>();
+        const size_t n = spins.size();
+        S0.resize(n); Se.resize(n);
+
+        MinResult res;
+        double dt = dt0;
+
+        double gmax0 = descent_direction(spins, k1); // k1 = -g⊥(S0)
+        res.fevals++;
+        const double gtol = atol + rtol * gmax0;
+        res.grad_max = gmax0;
+
+        for (res.iters = 0; res.iters < max_iter; ) {
+            if (res.grad_max <= gtol) { res.converged = true; break; }
+
+            for (size_t i = 0; i < n; ++i) S0[i] = spins[i].S;
+
+            // Euler predictor (order 1), written into the lattice so the
+            // gradient can be re-evaluated there.
+            for (size_t i = 0; i < n; ++i) {
+                Se[i] = retract(S0[i], k1[i], dt);
+                spins[i].S = Se[i];
+            }
+            descent_direction(spins, k2); // k2 = -g⊥(Se)
+            res.fevals++;
+
+            // Heun corrector (order 2) and scaled error estimate.
+            double err2 = 0.0;
+            for (size_t i = 0; i < n; ++i) {
+                vector3::vec3d avg = 0.5 * (k1[i] + k2[i]);
+                vector3::vec3d Sh  = retract(S0[i], avg, dt);
+                vector3::vec3d e   = Sh - Se[i];
+                double sc = atol + rtol * sqrt(vector3::dot(Sh, Sh)); // |S|≈1
+                err2 += vector3::dot(e, e) / (sc * sc);
+                spins[i].S = Sh; // tentatively accept the high-order state
+            }
+            double err = sqrt(err2 / (3.0 * n)); // RMS over all components
+
+            if (err <= 1.0 || dt <= dt_min) {
+                // Accept: advance and recompute the gradient at the new state.
+                res.iters++;
+                res.grad_max = descent_direction(spins, k1);
+                res.fevals++;
+                res.final_step = dt;
+                if (settings.verbosity >= 2 &&
+                    (res.iters <= 10 || res.iters % 50 == 0)) {
+                    printf("  [adaptive] iter %5d  dt=%.3e  |g|=%.3e  E=%.6f\n",
+                           res.iters, dt, res.grad_max,
+                           total_energy_per_unit_cell());
+                }
+            } else {
+                // Reject: restore and shrink dt (no gradient recompute needed;
+                // k1 at S0 is still valid).
+                for (size_t i = 0; i < n; ++i) spins[i].S = S0[i];
+            }
+
+            // I-controller: p=1 embedded error -> exponent 1/(p+1)=1/2.
+            double scale = safety * ((err > 0) ? std::pow(err, -0.5) : max_scale);
+            scale = std::clamp(scale, min_scale, max_scale);
+            dt = std::clamp(dt * scale, dt_min, dt_max);
+        }
+
+        res.E = total_energy_per_unit_cell();
+        return res;
+    }
+
+    /**
+     * @brief Best-alignment (Gauss–Seidel) sweeps.
+     *
+     * Sweeps the lattice repeatedly, snapping each spin to its exact single-site
+     * minimum (see align_spin). Uses the freshly-updated neighbours within a
+     * sweep, so it typically converges in far fewer sweeps than fixed-step
+     * descent for bilinear models — this is the natural T=0 solver for Heisenberg
+     * spins. Stops when the max tangential gradient drops below
+     * `atol + rtol·g0`.
+     */
+    MinResult minimise_align(int max_iter,
+                             double atol = 1e-8, double rtol = 1e-6) {
+        auto& spins = lat->get_objects<HeisenbergSpin>();
+        MinResult res;
+        double gmax0 = descent_direction(spins, dS);
+        res.fevals++;
+        const double gtol = atol + rtol * gmax0;
+
+        for (res.iters = 0; res.iters < max_iter; ++res.iters) {
+            for (auto& s : spins) align_spin(&s);
+            res.grad_max = descent_direction(spins, dS);
+            res.fevals++;
+            if (settings.verbosity >= 2 &&
+                (res.iters < 10 || res.iters % 50 == 0)) {
+                printf("  [align] sweep %5d  |g|=%.3e  E=%.6f\n",
+                       res.iters, res.grad_max, total_energy_per_unit_cell());
+            }
+            if (res.grad_max <= gtol) { res.converged = true; ++res.iters; break; }
+        }
+        res.E = total_energy_per_unit_cell();
+        return res;
+    }
+
+
 };
 
 

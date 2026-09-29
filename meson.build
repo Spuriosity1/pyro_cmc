@@ -85,6 +85,14 @@ anneal_bin = executable('anneal',
   install: true
   )
 
+minimise_bin = executable('minimise', 
+  files('src/minimise.cpp'),
+  dependencies: g_deps,
+  link_with: mc_lib,
+  include_directories: CMC_inc,
+  install: true
+  )
+
 eigen_dep = dependency('eigen3', required: true, include_type: 'system')
 
 ltgs_bin = executable('ltgs',

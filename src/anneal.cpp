@@ -59,6 +59,8 @@ int main (int argc, char *argv[]) {
         .implicit_value(true)
         .default_value(false);
 
+    prog.add_argument("--prefix")
+        .default_value("run");
 
     /// ANNEALING PROTOCOL
     prog.add_argument("--T_hot")
@@ -92,8 +94,6 @@ int main (int argc, char *argv[]) {
         .default_value(static_cast<size_t>(64))
         .help("Number of sweeps to run at T_cold while collecting statistics")
         .scan<'i', size_t>();
-    prog.add_argument("--prefix")
-        .default_value("run");
 
     prog.add_argument("--lifted")
         .help("Use lifted Metropolis (flip direction on rejection) instead of standard Metropolis")
