@@ -576,6 +576,229 @@ namespace CMC {
     }
 
 
+    // ---- Truncated Riemannian Newton (trust region) -------------------------
+
+    // Inner product of two tangent fields, Σ_i a_i·b_i.
+    static double field_dot(const std::vector<vector3::vec3d>& a,
+                            const std::vector<vector3::vec3d>& b) {
+        double s = 0.0;
+        for (size_t i = 0; i < a.size(); ++i) s += dot(a[i], b[i]);
+        return s;
+    }
+
+    // Positive root τ of ‖eta + τ d‖ = Delta, i.e. where the ray from `eta`
+    // along `d` meets the trust-region boundary. Called only when `eta` is
+    // strictly inside (c ≤ 0), so the discriminant is non-negative.
+    static double tr_boundary(const std::vector<vector3::vec3d>& eta,
+                              const std::vector<vector3::vec3d>& d, double Delta) {
+        double a = 0.0, b = 0.0, c = 0.0;
+        for (size_t i = 0; i < eta.size(); ++i) {
+            a += dot(d[i], d[i]);
+            b += 2.0 * dot(eta[i], d[i]);
+            c += dot(eta[i], eta[i]);
+        }
+        c -= Delta * Delta;
+        double disc = std::max(b * b - 4.0 * a * c, 0.0);
+        return (-b + std::sqrt(disc)) / (2.0 * a);
+    }
+
+    void Minimiser::euclid_hess_vec(const std::vector<HeisenbergSpin>& spins,
+                                    const std::vector<vector3::vec3d>& V,
+                                    std::vector<vector3::vec3d>& out) const {
+        const size_t n = spins.size();
+        const HeisenbergSpin* base = spins.data();
+        out.assign(n, vector3::vec3d{0, 0, 0});
+
+        for (size_t i = 0; i < n; ++i) {
+            const HeisenbergSpin& s = spins[i];
+            vector3::vec3d acc{0, 0, 0};
+
+            // Bilinear block: H_{ij} = J_{ij}, so (∇²E·V)_i = Σ_shell J·Σ_{j} V_j
+            // — exactly local_linear_field with the perturbation field in place
+            // of the spins.
+            for (const auto& shell : s.general_bonds) {
+                vector3::vec3d tmp{0, 0, 0};
+                for (const auto* other : shell.bonds) tmp += V[other - base];
+                acc += *shell.J * tmp;
+            }
+            for (const auto& shell : s.heis_bonds) {
+                vector3::vec3d tmp{0, 0, 0};
+                for (const auto* other : shell.bonds) tmp += V[other - base];
+                acc += *shell.J * tmp;
+            }
+
+            // Biquadratic block for E = Σ (K/2)(S_i·S_j)²:
+            //   diagonal   H_{ii} V_i = K Σ_j (S_j·V_i) S_j
+            //   off-diag   H_{ij} V_j = K [ (S_i·S_j) V_j + (S_i·V_j) S_j ]
+            const vector3::vec3d& Si = s.S;
+            const vector3::vec3d& Vi = V[i];
+            for (const auto& shell : s.biquad_bonds) {
+                vector3::vec3d tmp{0, 0, 0};
+                for (const auto* other : shell.bonds) {
+                    const vector3::vec3d& Sj = other->S;
+                    const vector3::vec3d& Vj = V[other - base];
+                    tmp += dot(Si, Sj) * Vj + dot(Si, Vj) * Sj + dot(Sj, Vi) * Sj;
+                }
+                acc += *shell.K * tmp;
+            }
+
+            out[i] = acc;
+        }
+    }
+
+    void Minimiser::riem_hess_vec(const std::vector<HeisenbergSpin>& spins,
+                                  const std::vector<double>& lam_,
+                                  const std::vector<vector3::vec3d>& V,
+                                  std::vector<vector3::vec3d>& out) {
+        euclid_hess_vec(spins, V, hv_scr);        // ∇²E·V
+        const size_t n = spins.size();
+        out.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            double nrm;
+            vector3::vec3d proj = tangential(hv_scr[i], spins[i].S, nrm);
+            out[i] = proj - lam_[i] * V[i];        // − λ_i V_i curvature correction
+        }
+    }
+
+    void Minimiser::trunc_cg(const std::vector<HeisenbergSpin>& spins,
+                             const std::vector<double>& lam_,
+                             const std::vector<vector3::vec3d>& g,
+                             double Delta, int max_inner,
+                             std::vector<vector3::vec3d>& eta,
+                             bool& hit_boundary) {
+        const size_t n = spins.size();
+        eta.assign(n, vector3::vec3d{0, 0, 0});
+        hit_boundary = false;
+
+        // Residual r = g at η=0; search direction d = −r (identity precond).
+        nr = g;
+        nd.resize(n);
+        for (size_t i = 0; i < n; ++i) nd[i] = -nr[i];
+
+        double r_dot_r = field_dot(nr, nr);
+        double g_norm  = std::sqrt(r_dot_r);
+        if (g_norm == 0.0) return;
+        // Inexact-Newton forcing sequence -> superlinear outer convergence.
+        const double forcing = g_norm * std::min(0.5, std::sqrt(g_norm));
+
+        for (int j = 0; j < max_inner; ++j) {
+            riem_hess_vec(spins, lam_, nd, nHd);       // Hd
+            double dHd = field_dot(nd, nHd);
+
+            if (dHd <= 0.0) {                          // negative curvature
+                double tau = tr_boundary(eta, nd, Delta);
+                for (size_t i = 0; i < n; ++i) eta[i] += tau * nd[i];
+                hit_boundary = true;
+                return;
+            }
+
+            double alpha = r_dot_r / dHd;
+
+            double e_norm2 = 0.0;                      // ‖η + α d‖²
+            for (size_t i = 0; i < n; ++i) {
+                vector3::vec3d t = eta[i] + alpha * nd[i];
+                e_norm2 += dot(t, t);
+            }
+            if (e_norm2 >= Delta * Delta) {            // stepped out of the region
+                double tau = tr_boundary(eta, nd, Delta);
+                for (size_t i = 0; i < n; ++i) eta[i] += tau * nd[i];
+                hit_boundary = true;
+                return;
+            }
+
+            for (size_t i = 0; i < n; ++i) eta[i] += alpha * nd[i];
+            for (size_t i = 0; i < n; ++i) nr[i]  += alpha * nHd[i];   // r += α Hd
+
+            double r_dot_r_new = field_dot(nr, nr);
+            if (std::sqrt(r_dot_r_new) <= forcing) return;
+
+            double beta = r_dot_r_new / r_dot_r;
+            for (size_t i = 0; i < n; ++i) nd[i] = -nr[i] + beta * nd[i];
+            r_dot_r = r_dot_r_new;
+        }
+    }
+
+    MinResult Minimiser::minimise_newton_tr(int max_outer, double atol,
+                                            double rtol, double Delta0,
+                                            int max_inner) {
+        auto& spins = lat->get_objects<HeisenbergSpin>();
+        const size_t n = spins.size();
+        const double Ncells = lat->lattice.num_primitive_cells();
+
+        MinResult res;
+        g_eucl.resize(n); g_riem.resize(n); lam.resize(n); S0.resize(n);
+
+        // Riemannian gradient, Euclidean gradient and λ at the current config.
+        auto refresh_grad = [&]() {
+            double gmax = 0.0;
+            for (size_t i = 0; i < n; ++i) {
+                g_eucl[i] = grad(&spins[i]);
+                lam[i]    = dot(g_eucl[i], spins[i].S);
+                double nrm;
+                g_riem[i] = tangential(g_eucl[i], spins[i].S, nrm);
+                gmax = std::max(gmax, nrm);
+            }
+            return gmax;
+        };
+
+        res.grad_max = refresh_grad();
+        res.fevals++;
+        const double gtol = atol + rtol * res.grad_max;
+
+        double Delta = Delta0;
+        constexpr double Delta_max = 1e3, eta_accept = 0.1;
+
+        for (res.iters = 0; res.iters < max_outer; ++res.iters) {
+            if (res.grad_max <= gtol) { res.converged = true; break; }
+
+            bool hit_boundary = false;
+            trunc_cg(spins, lam, g_riem, Delta, max_inner, neta, hit_boundary);
+            res.fevals++;
+
+            // Predicted reduction from the quadratic model,
+            // pred = −(⟨g,η⟩ + ½⟨η,Hη⟩), in total-energy units.
+            riem_hess_vec(spins, lam, neta, nHd);      // Hη
+            double gη  = field_dot(g_riem, neta);
+            double ηHη = field_dot(neta, nHd);
+            double pred = -(gη + 0.5 * ηHη);
+
+            // Actual reduction: apply the trial step, remembering the old state.
+            double E_old = total_energy_per_unit_cell();
+            for (size_t i = 0; i < n; ++i) {
+                S0[i] = spins[i].S;
+                spins[i].S = retract(spins[i].S, neta[i], 1.0);
+            }
+            double E_new = total_energy_per_unit_cell();
+            double ared = (E_old - E_new) * Ncells;    // total-energy units
+
+            double rho = (pred > 0.0) ? ared / pred
+                                      : (ared > 0.0 ? 1.0 : -1.0);
+
+            // Adapt the trust-region radius.
+            if (rho < 0.25)                       Delta *= 0.25;
+            else if (rho > 0.75 && hit_boundary)  Delta = std::min(2.0 * Delta, Delta_max);
+
+            if (rho > eta_accept) {                // accept
+                res.grad_max = refresh_grad();
+                res.fevals++;
+                res.final_step = Delta;
+            } else {                               // reject: restore
+                for (size_t i = 0; i < n; ++i) spins[i].S = S0[i];
+            }
+
+            if (settings.verbosity >= 2 &&
+                (res.iters < 10 || res.iters % 50 == 0)) {
+                printf("  [newton] iter %5d  Δ=%.3e  ρ=%+.3f  |g|=%.3e  E=%.6f\n",
+                       res.iters, Delta, rho, res.grad_max,
+                       total_energy_per_unit_cell());
+            }
+        }
+
+        res.E = total_energy_per_unit_cell();
+        return res;
+    }
+
+
     void save_ft_spin_state(Lattice& lat, const std::filesystem::path& file_path){
         hid_t file = h5_create_trunc_nolock(file_path.string());
 

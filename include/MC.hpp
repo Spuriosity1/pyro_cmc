@@ -265,6 +265,13 @@ class Minimiser : public InteractingHamiltonian {
     std::vector<vector3::vec3d> Se;   // Euler predictor (low order)
     std::vector<vector3::vec3d> dS;   // legacy fixed-step buffer
 
+    // Newton-trust-region scratch (see minimise_newton_tr).
+    std::vector<vector3::vec3d> g_eucl;    // Euclidean gradient per site
+    std::vector<vector3::vec3d> g_riem;    // Riemannian (tangential) gradient
+    std::vector<double>         lam;       // λ_i = S_i·g_i (Lagrange multiplier)
+    std::vector<vector3::vec3d> nr, nd, nHd, neta; // truncated-CG buffers
+    std::vector<vector3::vec3d> hv_scr;    // Euclidean Hessian-vector scratch
+
     // Full energy gradient at site i, including the external field.
     vector3::vec3d grad(const HeisenbergSpin* spin) const {
         return local_field(spin) - global_field;
@@ -301,6 +308,33 @@ class Minimiser : public InteractingHamiltonian {
         }
         return gmax;
     }
+
+    // Euclidean Hessian-vector product (∇²E·V)_i for a field V indexed like the
+    // spin array. Reuses the bond loops: the bilinear block is the exchange
+    // matrix itself, so this is `local_linear_field` evaluated on V; the
+    // biquadratic block adds the K-dependent terms. Reads spins, writes `out`.
+    void euclid_hess_vec(const std::vector<HeisenbergSpin>& spins,
+                         const std::vector<vector3::vec3d>& V,
+                         std::vector<vector3::vec3d>& out) const;
+
+    // Riemannian Hessian-vector product on the product-of-spheres manifold,
+    // Hess f[V]_i = P_{S_i}(∇²E·V)_i − λ_i V_i, with λ_i = S_i·g_i precomputed.
+    // V must be tangent; `out` is tangent. Uses hv_scr as scratch.
+    void riem_hess_vec(const std::vector<HeisenbergSpin>& spins,
+                       const std::vector<double>& lam_,
+                       const std::vector<vector3::vec3d>& V,
+                       std::vector<vector3::vec3d>& out);
+
+    // Steihaug–Toint truncated CG: approximately solve Hess f[η] = −g inside the
+    // trust region ‖η‖ ≤ Δ, stopping early on the inexact-Newton forcing
+    // sequence or on negative curvature. Writes the step into `eta` and reports
+    // whether it reached the trust-region boundary.
+    void trunc_cg(const std::vector<HeisenbergSpin>& spins,
+                  const std::vector<double>& lam_,
+                  const std::vector<vector3::vec3d>& g,
+                  double Delta, int max_inner,
+                  std::vector<vector3::vec3d>& eta,
+                  bool& hit_boundary);
 
 public:
     Min_parameters settings;
@@ -371,7 +405,30 @@ public:
      * `atol + rtol·g0`.
      */
     MinResult minimise_align(int max_iter,
-                             double atol = 1e-8, double rtol = 1e-6); 
+                             double atol = 1e-8, double rtol = 1e-6);
+
+    /**
+     * @brief Truncated Riemannian Newton (trust-region) minimiser.
+     *
+     * At each outer iteration the Newton system Hess f[η] = −grad f is solved
+     * approximately by Steihaug–Toint truncated CG inside a trust region of
+     * radius Δ, using exact Hessian-vector products (riem_hess_vec). CG bails to
+     * the trust-region boundary on negative curvature, so the near-flat soft
+     * modes and saddles that stall gradient descent are handled gracefully. The
+     * step is accepted/rejected by the ratio ρ of actual to predicted energy
+     * reduction, which also adapts Δ. Needs no vector transport (all CG work
+     * lives in one tangent space) and no line search.
+     *
+     * Best used after a few `minimise_align` sweeps have removed the
+     * short-wavelength error. Stops when the max tangential gradient falls below
+     * `atol + rtol·g0` or after `max_outer` outer iterations.
+     *
+     * @param Delta0    initial trust-region radius (auto-adapted)
+     * @param max_inner cap on truncated-CG iterations per outer step
+     */
+    MinResult minimise_newton_tr(int max_outer, double atol = 1e-8,
+                                 double rtol = 1e-6, double Delta0 = 0.2,
+                                 int max_inner = 50);
 
 
 };
