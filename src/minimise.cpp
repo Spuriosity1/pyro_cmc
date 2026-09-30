@@ -131,7 +131,6 @@ int main (int argc, char *argv[]) {
     auto lat = build_pyro_lat(prog);
     auto mc = build_J1J2J3_h<Minimiser>
         (prog, lat, prog.get<size_t>("--seed"));
-    mc.setup_lattice();
 
     mc.randomize_spins();
 
