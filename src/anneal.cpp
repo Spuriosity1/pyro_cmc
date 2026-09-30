@@ -94,6 +94,11 @@ int main (int argc, char *argv[]) {
         .default_value(static_cast<size_t>(64))
         .help("Number of sweeps to run at T_cold while collecting statistics")
         .scan<'i', size_t>();
+    prog.add_argument("--n_overrelax")
+        .default_value(static_cast<size_t>(10))
+        .help("Number of overrelaxations to do every step")
+        .scan<'i', size_t>();
+
 
     prog.add_argument("--lifted")
         .help("Use lifted Metropolis (flip direction on rejection) instead of standard Metropolis")
@@ -179,10 +184,12 @@ int main (int argc, char *argv[]) {
     ssf_manager ssfm(lat, {"xx", "yy", "zz", "xy", "xz", "yz"},
                      file_path.string(), "/ssf", T_sample, true);
 
+    size_t n_overrelax = prog.get<size_t>("--n_overrelax");
+
     const bool use_lifted = prog.get<bool>("--lifted");
     auto sweep = [&](double T_) -> size_t {
-        return use_lifted ? mc.sweep_lifted_Metropolis(T_)
-                          : mc.sweep_local_Metropolis(T_);
+        return use_lifted ? mc.sweep_lifted_Metropolis(T_, n_overrelax)
+                          : mc.sweep_local_Metropolis(T_, n_overrelax);
     };
 
     printf("Done. Begin anneal%s...\n", use_lifted ? " (lifted Metropolis)" : "");

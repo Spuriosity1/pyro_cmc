@@ -190,13 +190,20 @@ int main (int argc, char *argv[]) {
     // the Heisenberg trace <S.S>(q); the three off-diagonals carry the spiral-plane
     // tensor (real part) and the vector chirality (imaginary part), from which the
     // O(3)-invariant plane observables are reconstructed in postprocessing.
+    energy_manager e_manager;
     ssf_manager ssfm(lat, 
             {"xx", "yy", "zz", "xy", "xz", "yz"},
                      file_path.string(), "/ssf", {0}, true);
 
+    // Sample a single data point
     ssfm.set_T(0);
     ssfm.sample();
     ssfm.flush();
+
+    double E = mc.total_energy_per_unit_cell();
+    e_manager.new_T(0);
+    e_manager.sample(E);
+    printf("Final energy: E=%.3f\n", E);
 
 
     // ssf metadata reopens the file itself; energy + geometry share one final
@@ -204,6 +211,7 @@ int main (int argc, char *argv[]) {
     ssfm.write_group(-1, "/ssf");
     {
         hid_t file_id = h5_open_rdwr_nolock(file_path.string());
+        e_manager.write_group(file_id, "/energy");
         write_geometry_group(file_id, lat);
         H5Fclose(file_id);
     }
