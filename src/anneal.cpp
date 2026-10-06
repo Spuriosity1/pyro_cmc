@@ -1,9 +1,12 @@
 #include <algorithm>
 
+#include <optional>
+
 #include "MC.hpp"
 #include "cli_bits.hpp"
 #include "ssf_manager.hpp"
 #include "energy_manager.hpp"
+#include "autocorr_manager.hpp"
 #include "pyrochlore_geometry.hpp"
 #include "format_bits.hpp"
 #include "h5_bits.hpp"
@@ -38,31 +41,38 @@ int main (int argc, char *argv[]) {
 
     /// BOOK-KEEPING
     prog.add_argument("--output_dir", "-o")
-        .help("Path to output")
+        .help("Path for output files")
         .required();
 
     prog.add_argument("--seed", "-s")
         .required()
-        .help("Seed index to seed the RNG")
+        .help("Seed index to seed the RNG (hashed internally using a true-random lookup table)")
         .scan<'i', size_t>();
 
     prog.add_argument("--save_state")
-        .implicit_value(true)
-        .default_value(false);
+        .help("Flag that saves the full system state as a separate HDF5 file")
+        .implicit_value(true).default_value(false);
 
     prog.add_argument("--save_state_ft")
-        .implicit_value(true)
-        .default_value(false);
+        .help("Flag that saves the full, Fourier transformed system state as a separate HDF5 file")
+        .implicit_value(true).default_value(false);
 
-    prog.add_argument("--init_spiral")
-        .help("Pre-initialise spins to a spiral with the wavevector given by --Q (requires --Q)")
-        .implicit_value(true)
-        .default_value(false);
+    prog.add_argument("--save_autocorrelation")
+        .help("Saves an auxiliarly field in the output contianing the spin autocorrelation in MC time.")
+        .implicit_value(true).default_value(false);
 
     prog.add_argument("--prefix")
         .default_value("run");
 
     /// ANNEALING PROTOCOL
+    prog.add_argument("--init_spiral")
+        .help("Pre-initialise spins to a spiral with the wavevector given by --Q (requires --Q)")
+        .implicit_value(true).default_value(false);
+
+    prog.add_argument("--lifted")
+        .help("Use lifted Metropolis (flip direction on rejection) instead of standard Metropolis")
+        .implicit_value(true).default_value(false);
+
     prog.add_argument("--T_hot")
         .help("Temperature  to begin annealing from")
         .scan<'g',double>();
@@ -98,12 +108,6 @@ int main (int argc, char *argv[]) {
         .default_value(static_cast<size_t>(10))
         .help("Number of overrelaxations to do every step")
         .scan<'i', size_t>();
-
-
-    prog.add_argument("--lifted")
-        .help("Use lifted Metropolis (flip direction on rejection) instead of standard Metropolis")
-        .implicit_value(true)
-        .default_value(false);
 
     provide_physical_args(prog);
 
@@ -184,6 +188,15 @@ int main (int argc, char *argv[]) {
     ssf_manager ssfm(lat, {"xx", "yy", "zz", "xy", "xz", "yz"},
                      file_path.string(), "/ssf", T_sample, true);
 
+    // Optional single-spin autocorrelation diagnostic. Tracks one representative
+    // spin (near the middle of the object list) through MC time at each sampled
+    // temperature; the series are transformed into A(tau) on write.
+    std::optional<autocorr_manager> acm;
+    if (prog.get<bool>("--save_autocorrelation")) {
+        auto& objs = lat.get_objects<HeisenbergSpin>();
+        acm.emplace(&objs[objs.size() / 2], T_sample.size());
+    }
+
     size_t n_overrelax = prog.get<size_t>("--n_overrelax");
 
     const bool use_lifted = prog.get<bool>("--lifted");
@@ -207,16 +220,23 @@ int main (int argc, char *argv[]) {
         for (size_t n=0; n<n_sweep; n++){
             accepted += sweep(T);
         }
-        double e = mc.total_energy_per_unit_cell();
-        e_manager.sample(e);
+        double e_ref = mc.total_energy_per_unit_cell();
+        e_manager.sample(e_ref);
 
         if (S_idx.contains(i)){
             printf("Sampling at T=%lf (%zu sweeps)...\n", T, n_sample);
             ssfm.new_T(T);
+            if (acm) acm->new_T(T);
             for (size_t i=0; i<n_sample; i++){
                 size_t accepted_ssf=0;
                 for (size_t n=0; n<n_sweep; n++){
                     accepted_ssf += sweep(T);
+                    // Record the energy diff for autocorrelation
+                    if (acm) {
+                        double e = mc.total_energy_per_unit_cell();
+                        acm->sample(e-e_ref);
+                        e_ref = e;
+                    }
                 }
                 printf("[ssf] Iter %4zu T=%.3e Acceptance rate: %.2f%%\n",
                         i, T, accepted_ssf*100.0/lat.get_objects<HeisenbergSpin>().size()/n_sweep);
@@ -238,6 +258,7 @@ int main (int argc, char *argv[]) {
         hid_t file_id = h5_open_rdwr_nolock(file_path.string());
         e_manager.write_group(file_id, "/energy");
         write_geometry_group(file_id, lat);
+        if (acm) acm->write_group(file_id, "/autocorr");
         H5Fclose(file_id);
     }
     std::cout<<"Saved to \n"<< file_path<<std::endl;

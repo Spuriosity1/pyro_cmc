@@ -11,6 +11,7 @@
 #include <cassert>
 #include <cmath>
 #include <algorithm>
+#include <array>
 
 // LatticeLab 2
 #include <lattice_lib/supercell.hpp>
@@ -177,6 +178,9 @@ class InteractingHamiltonian {
 
     double total_energy_per_unit_cell() const;
 
+    // auxiliary vector method avoiding severe subtraction
+    void local_energy_delta(std::vector<double>&, double alpha=1) const;
+
     void define_general_coupling(const std::string& name,
             const std::vector<std::vector<ipos_t>>& rel_vecs,
             const vector3::mat33<double>& J
@@ -269,8 +273,16 @@ class Minimiser : public InteractingHamiltonian {
     std::vector<vector3::vec3d> g_eucl;    // Euclidean gradient per site
     std::vector<vector3::vec3d> g_riem;    // Riemannian (tangential) gradient
     std::vector<double>         lam;       // λ_i = S_i·g_i (Lagrange multiplier)
-    std::vector<vector3::vec3d> nr, nd, nHd, neta; // truncated-CG buffers
+    std::vector<vector3::vec3d> nr, nd, nHd, neta, ny; // truncated-CG buffers
+    std::vector<double>         precond;   // per-site Jacobi preconditioner m_i
     std::vector<vector3::vec3d> hv_scr;    // Euclidean Hessian-vector scratch
+
+    // Exact global-rotation zero modes of the Riemannian Hessian (see
+    // build_zero_modes). Orthonormal under field_dot; n_zmode of the 3 slots
+    // are populated (3 at zero field, 1 about the field axis, fewer if the
+    // configuration is collinear).
+    std::array<std::vector<vector3::vec3d>, 3> zmode;
+    int n_zmode = 0;
 
     // Full energy gradient at site i, including the external field.
     vector3::vec3d grad(const HeisenbergSpin* spin) const {
@@ -325,10 +337,28 @@ class Minimiser : public InteractingHamiltonian {
                        const std::vector<vector3::vec3d>& V,
                        std::vector<vector3::vec3d>& out);
 
-    // Steihaug–Toint truncated CG: approximately solve Hess f[η] = −g inside the
-    // trust region ‖η‖ ≤ Δ, stopping early on the inexact-Newton forcing
-    // sequence or on negative curvature. Writes the step into `eta` and reports
-    // whether it reached the trust-region boundary.
+    // Preconditioned Steihaug–Toint truncated CG: approximately solve
+    // Hess f[η] = −g inside the trust region ‖η‖_M ≤ Δ (measured in the
+    // preconditioner M-norm so the Steihaug boundary-monotonicity property
+    // still holds), stopping early on the inexact-Newton forcing sequence or on
+    // negative curvature. The Jacobi preconditioner M = diag(m_i) uses the
+    // dominant Riemannian-Hessian diagonal m_i = max(−λ_i, floor), which
+    // rescales the stiff local-field modes against the near-flat soft modes and
+    // keeps CG from stalling on this ill-conditioned problem. Writes the step
+    // into `eta` and reports whether it reached the trust-region boundary.
+    // Build the orthonormal basis of exact global-rotation zero modes at the
+    // current configuration. The generator of a uniform rotation about axis â
+    // is V_i = â × S_i, which the Heisenberg energy leaves invariant, so these
+    // are exact kernel directions of Hess f. At zero field all three (x,y,z)
+    // are symmetries; a non-zero field breaks all but rotation about B̂.
+    // Deflating these from the CG subspace removes the hard zero eigenvalues
+    // that otherwise let the trust-region step wander along a useless rotation,
+    // collapsing Δ. Fills zmode / n_zmode.
+    void build_zero_modes(const std::vector<HeisenbergSpin>& spins);
+
+    // Project the zero-mode components out of a tangent field in place.
+    void project_zero_modes(std::vector<vector3::vec3d>& w) const;
+
     void trunc_cg(const std::vector<HeisenbergSpin>& spins,
                   const std::vector<double>& lam_,
                   const std::vector<vector3::vec3d>& g,

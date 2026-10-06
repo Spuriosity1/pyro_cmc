@@ -69,24 +69,18 @@ int main (int argc, char *argv[]) {
     provide_bookkeeping_args(prog);
 
     // MINIMISER CHOICE
-    prog.add_argument("--algorithm", "-a")
-        .help("Minimiser: 'adaptive' (adaptive-step gradient flow), "
-              "'align' (best-alignment Gauss-Seidel sweeps, sequential) [default], "
-              "'newton' (truncated Riemannian Newton, trust-region), "
-              )
-        .default_value(std::string("align"))
-        .choices("adaptive", "align", "newton");
-
+    // prog.add_argument("--algorithm", "-a")
+    //     .help("Minimiser: 'adaptive' (adaptive-step gradient flow), "
+    //           "'align' (best-alignment Gauss-Seidel sweeps, sequential) [default], "
+    //           "'newton' (truncated Riemannian Newton, trust-region), "
+    //           )
+    //     .default_value(std::string("align"))
+    //     .choices("adaptive", "align", "newton");
+    //
     prog.add_argument("--niter", "-n")
         .help("Maximum number of minimiser iterations (steps/sweeps) to run")
         .default_value((int) 100000)
         .scan<'i', int>();
-
-    prog.add_argument("--step_size")
-        .help("Initial step size. For 'adaptive' this is only a starting guess "
-              "(auto-tuned).")
-        .default_value(0.01)
-        .scan<'g', double>();
 
     prog.add_argument("--atol")
         .help("Absolute tolerance for the adaptive step controller and the "
@@ -105,6 +99,9 @@ int main (int argc, char *argv[]) {
               "(auto-adapted thereafter)")
         .default_value(0.2)
         .scan<'g', double>();
+
+    prog.add_argument("--polish")
+        .implicit_value(true).default_value(false);
 
     prog.add_argument("--max_inner")
         .help("Cap on truncated-CG iterations per outer step ('newton' only)")
@@ -159,26 +156,27 @@ int main (int argc, char *argv[]) {
         "niter="<<prog.get<int>("--niter")<<DELIM;
 
 
-    auto algo = prog.get<std::string>("--algorithm");
     auto max_iter = prog.get<int>("--niter");
-    double step_size=prog.get<double>("--step_size");
 
     MinResult res;
 
-    if (algo == "align") {
+    res = mc.minimise_newton_tr(max_iter, prog.get<double>("--atol"),
+            prog.get<double>("--rtol"), prog.get<double>("--tr_radius"),
+            prog.get<int>("--max_inner"));
+
+    std::cout << "End of Newton convergence. Result:"<<std::endl;
+    std::cout << res;
+
+    double E = mc.total_energy_per_unit_cell();
+    printf("Post-Newton energy: E=%.16f\n", E);
+
+    if (prog.get<bool>("--polish") ) {
+        std::cout << "Polishing using Gauss-Seidel alignment"<<std::endl;
         res = mc.minimise_align(max_iter,
                 prog.get<double>("--atol"),
                 prog.get<double>("--rtol"));
-    } else if (algo == "adaptive") {
-        res = mc.minimise_adaptive(max_iter, step_size, prog.get<double>("--atol"),
-                prog.get<double>("--rtol"));
-    } else if (algo == "newton") {
-        res = mc.minimise_newton_tr(max_iter, prog.get<double>("--atol"),
-                prog.get<double>("--rtol"), prog.get<double>("--tr_radius"),
-                prog.get<int>("--max_inner"));
     }
 
-    std::cout << res;
     if (!res.converged){
         std::cerr << "Failed to converge! Aborting...\n";
         return 1;
@@ -202,10 +200,10 @@ int main (int argc, char *argv[]) {
     ssfm.sample();
     ssfm.flush();
 
-    double E = mc.total_energy_per_unit_cell();
+    E = mc.total_energy_per_unit_cell();
     e_manager.new_T(0);
     e_manager.sample(E);
-    printf("Final energy: E=%.3f\n", E);
+    printf("Final energy: E=%.16f\n", E);
 
 
     // ssf metadata reopens the file itself; energy + geometry share one final

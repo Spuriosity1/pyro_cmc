@@ -29,6 +29,25 @@ namespace CMC {
         v = c * v + ((1-c)/norm2) * dot(axis, v) * axis + (s / sqrt(norm2)) * cross(axis, v);
     }
 
+    double Kahan_sum(const std::vector<double>& delta){
+        // Sums in pairs to avoid severe subtraciton
+        // https://en.wikipedia.org/wiki/Kahan_summation_algorithm
+        double acc = 0;
+
+        double c = 0;
+        for (auto d : delta){
+            double y = d - c;
+            // acc is big, y is small
+            double t = acc + y;
+            // (t-sum) -y recovers low part of y
+            c = (t-acc) - y;
+            acc = t;
+        }
+
+        return acc;
+
+    }
+
 
     void InteractingHamiltonian::setup_lattice(){
         auto& spins = lat->get_objects<HeisenbergSpin>();
@@ -466,6 +485,19 @@ namespace CMC {
         return E / lat->lattice.num_primitive_cells();
     }
 
+    void InteractingHamiltonian::local_energy_delta(std::vector<double>& E_vec, double alpha) const{
+        const auto& spins = std::get<std::vector<HeisenbergSpin>>(lat->objects);
+        auto n_spins = spins.size();
+
+        for (size_t j = 0; j<n_spins; j++ ){
+            auto s = &spins[j];
+            E_vec[j] += alpha * (
+                0.5 * (dot(s->S, local_linear_field(s)) + biquad_site_energy(s, s->S))
+                - dot(s->S, global_field)
+                );
+        }
+    }
+
     void InteractingHamiltonian::rebind(Lattice& new_lat){
         assert(new_lat.get_objects<HeisenbergSpin>().size()
                 == lat->get_objects<HeisenbergSpin>().size());
@@ -586,20 +618,63 @@ namespace CMC {
         return s;
     }
 
-    // Positive root τ of ‖eta + τ d‖ = Delta, i.e. where the ray from `eta`
-    // along `d` meets the trust-region boundary. Called only when `eta` is
-    // strictly inside (c ≤ 0), so the discriminant is non-negative.
+    // Positive root τ of ‖eta + τ d‖_M = Delta, i.e. where the ray from `eta`
+    // along `d` meets the trust-region boundary in the preconditioner M-norm
+    // (‖v‖_M² = Σ_i m_i v_i·v_i). Called only when `eta` is strictly inside
+    // (c ≤ 0), so the discriminant is non-negative.
     static double tr_boundary(const std::vector<vector3::vec3d>& eta,
-                              const std::vector<vector3::vec3d>& d, double Delta) {
+                              const std::vector<vector3::vec3d>& d,
+                              const std::vector<double>& M, double Delta) {
         double a = 0.0, b = 0.0, c = 0.0;
         for (size_t i = 0; i < eta.size(); ++i) {
-            a += dot(d[i], d[i]);
-            b += 2.0 * dot(eta[i], d[i]);
-            c += dot(eta[i], eta[i]);
+            a += M[i] * dot(d[i], d[i]);
+            b += 2.0 * M[i] * dot(eta[i], d[i]);
+            c += M[i] * dot(eta[i], eta[i]);
         }
         c -= Delta * Delta;
         double disc = std::max(b * b - 4.0 * a * c, 0.0);
         return (-b + std::sqrt(disc)) / (2.0 * a);
+    }
+
+    void Minimiser::build_zero_modes(const std::vector<HeisenbergSpin>& spins) {
+        const size_t n = spins.size();
+
+        // Candidate rotation axes: the full SO(3) triad at zero field, else just
+        // the field axis B̂ (the only unbroken U(1)).
+        std::vector<vector3::vec3d> axes;
+        double Bn = std::sqrt(dot(global_field, global_field));
+        if (Bn < 1e-12)
+            axes = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        else
+            axes = {global_field / Bn};
+
+        n_zmode = 0;
+        for (const auto& ax : axes) {
+            auto& z = zmode[n_zmode];
+            z.resize(n);
+            for (size_t i = 0; i < n; ++i) z[i] = cross(ax, spins[i].S);
+
+            // Gram–Schmidt against the already-accepted modes, then normalise.
+            // A collinear configuration makes some generators vanish or become
+            // dependent; those drop out via the small-norm test.
+            for (int b = 0; b < n_zmode; ++b) {
+                double c = field_dot(zmode[b], z);
+                for (size_t i = 0; i < n; ++i) z[i] -= c * zmode[b][i];
+            }
+            double nrm = std::sqrt(field_dot(z, z));
+            if (nrm > 1e-8) {
+                double inv = 1.0 / nrm;
+                for (size_t i = 0; i < n; ++i) z[i] *= inv;
+                ++n_zmode;
+            }
+        }
+    }
+
+    void Minimiser::project_zero_modes(std::vector<vector3::vec3d>& w) const {
+        for (int b = 0; b < n_zmode; ++b) {
+            double c = field_dot(zmode[b], w);
+            for (size_t i = 0; i < w.size(); ++i) w[i] -= c * zmode[b][i];
+        }
     }
 
     void Minimiser::euclid_hess_vec(const std::vector<HeisenbergSpin>& spins,
@@ -670,51 +745,78 @@ namespace CMC {
         eta.assign(n, vector3::vec3d{0, 0, 0});
         hit_boundary = false;
 
-        // Residual r = g at η=0; search direction d = −r (identity precond).
-        nr = g;
-        nd.resize(n);
-        for (size_t i = 0; i < n; ++i) nd[i] = -nr[i];
+        // Jacobi preconditioner from the dominant Riemannian-Hessian diagonal.
+        // For the bilinear part Hess f has self-block −λ_i I, so m_i = −λ_i is
+        // the local curvature (≈ local-field stiffness). Soft/unstable sites
+        // (−λ_i ≤ 0 or tiny) are floored to a small fraction of the stiffest
+        // site to keep M SPD and the condition number of M⁻¹H bounded.
+        precond.resize(n);
+        double lam_scale = 0.0;
+        for (size_t i = 0; i < n; ++i)
+            lam_scale = std::max(lam_scale, std::fabs(lam_[i]));
+        const double m_floor = std::max(1e-12, 1e-3 * lam_scale);
+        for (size_t i = 0; i < n; ++i)
+            precond[i] = std::max(-lam_[i], m_floor);
 
-        double r_dot_r = field_dot(nr, nr);
-        double g_norm  = std::sqrt(r_dot_r);
+        // Residual r = g at η=0; preconditioned residual y = M⁻¹ r;
+        // search direction d = −y.
+        nr = g;
+        ny.resize(n);
+        nd.resize(n);
+        for (size_t i = 0; i < n; ++i) ny[i] = nr[i] / precond[i];
+        // The diagonal preconditioner does not preserve the deflated subspace,
+        // so re-project y after every solve to keep the search directions (and
+        // hence η) exactly orthogonal to the rotation zero modes.
+        project_zero_modes(ny);
+        for (size_t i = 0; i < n; ++i) nd[i] = -ny[i];
+
+        double r_dot_y = field_dot(nr, ny);            // = rᵀM⁻¹r ≥ 0
+        double g_norm  = std::sqrt(field_dot(nr, nr)); // Euclidean residual norm
         if (g_norm == 0.0) return;
         // Inexact-Newton forcing sequence -> superlinear outer convergence.
         const double forcing = g_norm * std::min(0.5, std::sqrt(g_norm));
+
+        double eta_M2 = 0.0;                           // ‖η‖_M², grows monotonically
 
         for (int j = 0; j < max_inner; ++j) {
             riem_hess_vec(spins, lam_, nd, nHd);       // Hd
             double dHd = field_dot(nd, nHd);
 
             if (dHd <= 0.0) {                          // negative curvature
-                double tau = tr_boundary(eta, nd, Delta);
+                double tau = tr_boundary(eta, nd, precond, Delta);
                 for (size_t i = 0; i < n; ++i) eta[i] += tau * nd[i];
                 hit_boundary = true;
                 return;
             }
 
-            double alpha = r_dot_r / dHd;
+            double alpha = r_dot_y / dHd;
 
-            double e_norm2 = 0.0;                      // ‖η + α d‖²
+            // ‖η + α d‖_M² = ‖η‖_M² + 2α⟨η,d⟩_M + α²‖d‖_M²
+            double eta_d_M = 0.0, d_M2 = 0.0;
             for (size_t i = 0; i < n; ++i) {
-                vector3::vec3d t = eta[i] + alpha * nd[i];
-                e_norm2 += dot(t, t);
+                eta_d_M += precond[i] * dot(eta[i], nd[i]);
+                d_M2    += precond[i] * dot(nd[i], nd[i]);
             }
+            double e_norm2 = eta_M2 + 2.0 * alpha * eta_d_M + alpha * alpha * d_M2;
             if (e_norm2 >= Delta * Delta) {            // stepped out of the region
-                double tau = tr_boundary(eta, nd, Delta);
+                double tau = tr_boundary(eta, nd, precond, Delta);
                 for (size_t i = 0; i < n; ++i) eta[i] += tau * nd[i];
                 hit_boundary = true;
                 return;
             }
 
             for (size_t i = 0; i < n; ++i) eta[i] += alpha * nd[i];
-            for (size_t i = 0; i < n; ++i) nr[i]  += alpha * nHd[i];   // r += α Hd
+            eta_M2 = e_norm2;
+            for (size_t i = 0; i < n; ++i) nr[i] += alpha * nHd[i];    // r += α Hd
 
-            double r_dot_r_new = field_dot(nr, nr);
-            if (std::sqrt(r_dot_r_new) <= forcing) return;
+            if (std::sqrt(field_dot(nr, nr)) <= forcing) return;
 
-            double beta = r_dot_r_new / r_dot_r;
-            for (size_t i = 0; i < n; ++i) nd[i] = -nr[i] + beta * nd[i];
-            r_dot_r = r_dot_r_new;
+            for (size_t i = 0; i < n; ++i) ny[i] = nr[i] / precond[i]; // y = M⁻¹r
+            project_zero_modes(ny);
+            double r_dot_y_new = field_dot(nr, ny);
+            double beta = r_dot_y_new / r_dot_y;
+            for (size_t i = 0; i < n; ++i) nd[i] = -ny[i] + beta * nd[i];
+            r_dot_y = r_dot_y_new;
         }
     }
 
@@ -723,7 +825,6 @@ namespace CMC {
                                             int max_inner) {
         auto& spins = lat->get_objects<HeisenbergSpin>();
         const size_t n = spins.size();
-        const double Ncells = lat->lattice.num_primitive_cells();
 
         MinResult res;
         g_eucl.resize(n); g_riem.resize(n); lam.resize(n); S0.resize(n);
@@ -748,8 +849,17 @@ namespace CMC {
         double Delta = Delta0;
         constexpr double Delta_max = 1e3, eta_accept = 0.1;
 
+        std::vector<double> loc_e(lat->get_objects<HeisenbergSpin>().size(), 0.);
+
+
         for (res.iters = 0; res.iters < max_outer; ++res.iters) {
             if (res.grad_max <= gtol) { res.converged = true; break; }
+
+            // Deflate the exact global-rotation zero modes at the current
+            // configuration: build the basis and strip them from the gradient
+            // so the Newton step lives purely in the curved subspace.
+            build_zero_modes(spins);
+            project_zero_modes(g_riem);
 
             bool hit_boundary = false;
             trunc_cg(spins, lam, g_riem, Delta, max_inner, neta, hit_boundary);
@@ -762,14 +872,19 @@ namespace CMC {
             double ηHη = field_dot(neta, nHd);
             double pred = -(gη + 0.5 * ηHη);
 
-            // Actual reduction: apply the trial step, remembering the old state.
-            double E_old = total_energy_per_unit_cell();
+            // Actual reduction, computed as Σ_i (E_old_i − E_new_i) rather than
+            // (E_old − E_new): forming the small per-site difference before the
+            // sum avoids the catastrophic cancellation that made ρ pure noise
+            // (and collapsed Δ) once the step reached the flat basin floor.
+            // loc_e must start at zero each outer iteration.
+            std::fill(loc_e.begin(), loc_e.end(), 0.0);
+            local_energy_delta(loc_e, 1);
             for (size_t i = 0; i < n; ++i) {
                 S0[i] = spins[i].S;
                 spins[i].S = retract(spins[i].S, neta[i], 1.0);
             }
-            double E_new = total_energy_per_unit_cell();
-            double ared = (E_old - E_new) * Ncells;    // total-energy units
+            local_energy_delta(loc_e, -1);
+            double ared = Kahan_sum(loc_e);    // total-energy units
 
             double rho = (pred > 0.0) ? ared / pred
                                       : (ared > 0.0 ? 1.0 : -1.0);

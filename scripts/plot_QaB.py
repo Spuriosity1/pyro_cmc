@@ -5,6 +5,7 @@ from plot_ssf import load_file, normalize_ssf, split_fixed_varying
 import argparse
 import numpy as np
 import h5py
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import os
 import sys
@@ -156,8 +157,15 @@ def main():
         ax.set_xlabel(x_label)
         ax.set_ylabel(y_label)
 
-    colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
-    series_color = {v: colors[i % len(colors)] for i, v in enumerate(series_vals)}
+    try:
+        vals_np = [float(v) for v in series_vals]
+        cmap = plt.colormaps['viridis']
+        norm = mpl.colors.Normalize(min(vals_np), max(vals_np))
+        series_color = {v: cmap(norm(float(v))) for v in series_vals}
+    except:
+        colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+        series_color = {v: colors[i % len(colors)] for i, v in enumerate(series_vals)}
+
 
     series_data = {
         v: {'x': [], 'I': [[], [], [], []],
