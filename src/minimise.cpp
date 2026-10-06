@@ -73,18 +73,18 @@ int main (int argc, char *argv[]) {
         .help("Minimiser: 'adaptive' (adaptive-step gradient flow), "
               "'align' (best-alignment Gauss-Seidel sweeps, sequential) [default], "
               "'newton' (truncated Riemannian Newton, trust-region), "
-              "'fixed' (legacy fixed-step gradient descent)")
+              )
         .default_value(std::string("align"))
-        .choices("adaptive", "align", "newton", "fixed");
+        .choices("adaptive", "align", "newton");
 
     prog.add_argument("--niter", "-n")
         .help("Maximum number of minimiser iterations (steps/sweeps) to run")
-        .default_value((int) 100)
+        .default_value((int) 100000)
         .scan<'i', int>();
 
     prog.add_argument("--step_size")
         .help("Initial step size. For 'adaptive' this is only a starting guess "
-              "(auto-tuned); for 'fixed' it is the constant step.")
+              "(auto-tuned).")
         .default_value(0.01)
         .scan<'g', double>();
 
@@ -163,24 +163,26 @@ int main (int argc, char *argv[]) {
     auto max_iter = prog.get<int>("--niter");
     double step_size=prog.get<double>("--step_size");
 
+    MinResult res;
+
     if (algo == "align") {
-        mc.minimise_align(max_iter,
+        res = mc.minimise_align(max_iter,
                 prog.get<double>("--atol"),
                 prog.get<double>("--rtol"));
     } else if (algo == "adaptive") {
-        mc.minimise_adaptive(max_iter, step_size, prog.get<double>("--atol"),
+        res = mc.minimise_adaptive(max_iter, step_size, prog.get<double>("--atol"),
                 prog.get<double>("--rtol"));
     } else if (algo == "newton") {
-        mc.minimise_newton_tr(max_iter, prog.get<double>("--atol"),
+        res = mc.minimise_newton_tr(max_iter, prog.get<double>("--atol"),
                 prog.get<double>("--rtol"), prog.get<double>("--tr_radius"),
                 prog.get<int>("--max_inner"));
-    } else if (algo == "fixed") {
-        for (int i = 0; i < max_iter; ++i) {
-            mc.gradient_descent(step_size);
-            double E = mc.total_energy_per_unit_cell();
-            printf("Iter %4d\tE=%.3f\n", i, E);
-        }
-    } 
+    }
+
+    std::cout << res;
+    if (!res.converged){
+        std::cerr << "Failed to converge! Aborting...\n";
+        return 1;
+    }
 
     auto file_path = outdir/( name.str() + ".out.h5");
     H5Fclose(h5_create_trunc_nolock(file_path.string()));
