@@ -69,7 +69,7 @@ inline auto provide_physical_args(argparse::ArgumentParser& prog){
     prog.add_argument("--Jzz")
         .help("Nearest-neighbour XXZ anisotropy (local [111] frame),  Jzz * Sz Sz."
               "Jzz=0 is isotropic Heisenberg.")
-        .default_value(1.0)
+        .default_value(0.0)
         .scan<'g', double>();
     prog.add_argument("--external_field", "-B")
         .help("Global magnetic field")

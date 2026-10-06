@@ -424,6 +424,8 @@ def main(argv):
     )
     parser.add_argument("paths", nargs="+",
                          help="Directories and/or .out.h5 files to process")
+    parser.add_argument("-q","--quiet", action="store_true",
+                        help="Return 0 regardless of success")
     args = parser.parse_args(argv)
 
     out_files, avg_files = collect_inputs(args.paths)
@@ -432,11 +434,15 @@ def main(argv):
 
     if not out_files:
         print("No .out.h5 files found.", file=sys.stderr)
+        if args.quiet:
+            return
         sys.exit(1)
 
     groups = group_runs(out_files)
     if not groups:
         print("No seed-tagged run files to merge.", file=sys.stderr)
+        if args.quiet:
+            return
         sys.exit(1)
 
     print(f"Found {len(out_files)} run file(s) in {len(groups)} group(s).")
