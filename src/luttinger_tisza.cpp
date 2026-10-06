@@ -1,5 +1,7 @@
 #include <complex>
+#include <cstdint>
 #include <limits>
+#include <random>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -84,6 +86,89 @@ static vector<LTBond> build_bonds(
     return bonds;
 }
 
+// -----------------------------------------------------------------------
+// Continuous LT band-minimum optimiser
+//
+// M(k) is (3·n_sl)² complex Hermitian, M[3α:3α+3, 3β:3β+3] = Σ J_bond·e^{ik·d}.
+// The LT ground state is the k minimising the lowest eigenvalue λ_min(k). We
+// find it by gradient descent instead of scanning the L³ commensurate k-grid.
+//
+//   M is analytic in k, so by Hellmann–Feynman
+//     ∂λ_min/∂k_i = v† (∂M/∂k_i) v ,     ∂M/∂k_i block = Σ J_bond·(i d_i)·e^{ik·d}
+//   with v the (normalised) lowest eigenvector. ∂M/∂k_i is Hermitian, so the
+//   quadratic form is real: per bond, s = v_α† (J·e^{ik·d}) v_β contributes
+//   Re(i d_i s) = −d_i·Im(s) to the i-th gradient component.
+// -----------------------------------------------------------------------
+using MatC = Eigen::MatrixXcd;
+
+struct LTSolution {
+    double           lambda;   // lowest eigenvalue of M(k)
+    Eigen::VectorXcd v;        // corresponding (normalised) eigenvector
+    Eigen::Vector3d  k;        // wavevector this was evaluated at
+};
+
+static MatC build_M(const vector<LTBond>& bonds,
+                    const Eigen::Vector3d& k, int M_dim) {
+    MatC M = MatC::Zero(M_dim, M_dim);
+    for (const auto& b : bonds) {
+        const double phase =
+            k[0]*(double)b.disp[0] + k[1]*(double)b.disp[1] + k[2]*(double)b.disp[2];
+        const complex<double> eph(cos(phase), sin(phase));
+        M.block<3,3>(3*b.alpha, 3*b.beta) += b.J.cast<complex<double>>() * eph;
+    }
+    return M;
+}
+
+static LTSolution solve_min(const vector<LTBond>& bonds,
+                            const Eigen::Vector3d& k, int M_dim) {
+    Eigen::SelfAdjointEigenSolver<MatC> eigs(build_M(bonds, k, M_dim));
+    return { eigs.eigenvalues()(0), eigs.eigenvectors().col(0), k };
+}
+
+static Eigen::Vector3d lt_gradient(const vector<LTBond>& bonds,
+                                   const Eigen::Vector3d& k,
+                                   const Eigen::VectorXcd& v) {
+    Eigen::Vector3d g = Eigen::Vector3d::Zero();
+    for (const auto& b : bonds) {
+        const double phase =
+            k[0]*(double)b.disp[0] + k[1]*(double)b.disp[1] + k[2]*(double)b.disp[2];
+        const complex<double> eph(cos(phase), sin(phase));
+        const Eigen::Vector3cd va = v.segment<3>(3*b.alpha);
+        const Eigen::Vector3cd vb = v.segment<3>(3*b.beta);
+        // s = v_α† (J·e^{ik·d}) v_β ; Vector3cd::dot conjugates its first arg.
+        const complex<double> s = va.dot((b.J.cast<complex<double>>() * vb) * eph);
+        for (int i = 0; i < 3; i++) g[i] -= (double)b.disp[i] * s.imag();
+    }
+    return g;
+}
+
+// Gradient descent with Armijo backtracking from a single seed k. Returns the
+// converged solution (lowest λ reached from this basin).
+static LTSolution descend(const vector<LTBond>& bonds, Eigen::Vector3d k,
+                          int M_dim, int max_iter, double gtol) {
+    LTSolution sol = solve_min(bonds, k, M_dim);
+    double step = 1.0;                     // line-search seed, grows on success
+    for (int it = 0; it < max_iter; it++) {
+        const Eigen::Vector3d g = lt_gradient(bonds, sol.k, sol.v);
+        const double gnorm = g.norm();
+        if (gnorm < gtol) break;
+
+        double eta = step;
+        bool moved = false;
+        for (int bt = 0; bt < 50; bt++) {
+            const LTSolution s_try = solve_min(bonds, sol.k - eta * g, M_dim);
+            if (s_try.lambda <= sol.lambda - 1e-4 * eta * gnorm * gnorm) {
+                sol = s_try; moved = true;
+                step = 2.0 * eta;          // be optimistic next iteration
+                break;
+            }
+            eta *= 0.5;
+        }
+        if (!moved) break;                 // stuck at a minimum
+    }
+    return sol;
+}
+
 
 int main(int argc, char* argv[])
 {
@@ -93,6 +178,24 @@ int main(int argc, char* argv[])
         .help("Path to output directory");
 
     provide_physical_args(prog);
+
+    // Optimiser controls (gradient descent over the continuous wavevector).
+    prog.add_argument("--restarts")
+        .help("Number of gradient-descent restarts (random seeds + Gamma)")
+        .default_value(48)
+        .scan<'i', int>();
+    prog.add_argument("--max_iter")
+        .help("Max gradient-descent iterations per restart")
+        .default_value(500)
+        .scan<'i', int>();
+    prog.add_argument("--gtol")
+        .help("Gradient-norm convergence tolerance")
+        .default_value(1e-9)
+        .scan<'g', double>();
+    prog.add_argument("--opt_seed")
+        .help("RNG seed for restart wavevectors")
+        .default_value(0)
+        .scan<'i', int>();
 
     try {
         prog.parse_args(argc, argv);
@@ -135,59 +238,68 @@ int main(int argc, char* argv[])
     }
     const int n_sl = static_cast<int>(sl_pos.size()); // = 16
 
-    const int Nk           = lat.num_primitive_cells();
     const ivec3_t k_dims   = lat.size();
     const auto bonds       = build_bonds(lat, sl_pos, J1, J2, J3, J4, Jzz);
 
     // -----------------------------------------------------------------------
-    // Sweep BZ: build M(k) and track minimum eigenvalue
+    // Minimise λ_min(k) by gradient descent (see descend()/lt_gradient()).
     //
-    // For XXZ, J is a 3×3 matrix, so M(k) is (3·n_sl)×(3·n_sl) complex
-    // Hermitian. Block M[3α:3α+3, 3β:3β+3] accumulates J_bond·e^{ik·d}.
-    // Hermiticity follows from the directed-bond sweep: the reverse bond
-    // (β→α, disp=-d) contributes J_bond^T·e^{-ik·d} = M_αβ†.
+    // λ_min(k) is periodic under the primitive reciprocal lattice, so the
+    // continuous optimum lives in one primitive BZ. We seed one descent at Γ
+    // plus (restarts−1) random points spanning that BZ and keep the best basin.
+    // The BZ is B·[−L/2, L/2)³ where B = supercell reciprocal vectors (the
+    // L³-grid spacing) — i.e. exactly the k reached by the old commensurate
+    // sweep, but now optimised off-grid.
     // -----------------------------------------------------------------------
-    using MatC = Eigen::MatrixXcd;
     const int M_dim = 3 * n_sl;
 
-    vector<double> eigenvalue_map(Nk);
-    double E_min = numeric_limits<double>::max();
-    idx3_t k_star_idx{};
-    Eigen::VectorXcd eigvec_star(M_dim);
+    const int    n_restart = prog.get<int>("--restarts");
+    const int    max_iter  = prog.get<int>("--max_iter");
+    const double gtol      = prog.get<double>("--gtol");
+    const uint64_t opt_seed = (uint64_t)prog.get<int>("--opt_seed");
 
-    for (int k_flat = 0; k_flat < Nk; k_flat++) {
-        const idx3_t Q   = lat.idx3_from_flat(k_flat);
-        const auto k_vec = lat.wavevector_from_idx3(Q);
+    Eigen::Matrix3d B;   // supercell reciprocal lattice vectors (index -> k)
+    {
+        const auto R = lat.get_reciprocal_lattice_vectors();
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++) B(i, j) = R(i, j);
+    }
+    const Eigen::Matrix3d Binv = B.inverse();
 
-        MatC M = MatC::Zero(M_dim, M_dim);
-        for (const auto& b : bonds) {
-            const double phase =
-                k_vec[0] * (double)b.disp[0] +
-                k_vec[1] * (double)b.disp[1] +
-                k_vec[2] * (double)b.disp[2];
-            complex<double> eph(cos(phase), sin(phase));
-            M.block<3,3>(3*b.alpha, 3*b.beta) +=
-                b.J.cast<complex<double>>() * eph;
+    std::mt19937_64 rng(opt_seed);
+    std::uniform_real_distribution<double> unif(-0.5, 0.5);
+
+    LTSolution best{ numeric_limits<double>::max(), Eigen::VectorXcd::Zero(M_dim),
+                     Eigen::Vector3d::Zero() };
+    for (int r = 0; r < n_restart; r++) {
+        Eigen::Vector3d k = Eigen::Vector3d::Zero();   // r == 0 -> Γ seed
+        if (r > 0) {
+            const Eigen::Vector3d frac(L*unif(rng), L*unif(rng), L*unif(rng));
+            k = B * frac;
         }
-        // M is Hermitian by construction (full directed-bond sweep)
-
-        Eigen::SelfAdjointEigenSolver<MatC> eigs(M);
-        const double lmin = eigs.eigenvalues()(0);
-        eigenvalue_map[k_flat] = lmin;
-
-        if (lmin < E_min) {
-            E_min       = lmin;
-            k_star_idx  = Q;
-            eigvec_star = eigs.eigenvectors().col(0);
-        }
+        const LTSolution sol = descend(bonds, k, M_dim, max_iter, gtol);
+        if (sol.lambda < best.lambda) best = sol;
     }
 
     // Energy per spin: each undirected bond counted twice in M → factor of 1/2
+    const double E_min      = best.lambda;
     const double E_per_spin = 0.5 * E_min;
+    const Eigen::VectorXcd& eigvec_star = best.v;
 
-    const auto k_star_vec = lat.wavevector_from_idx3(k_star_idx);
+    // Fold the optimal k back into the first BZ and report the nearest
+    // supercell-commensurate index for reference / HDF5 compatibility.
+    Eigen::Vector3d frac = Binv * best.k;              // continuous supercell index
+    for (int i = 0; i < 3; i++) frac[i] -= L * std::round(frac[i] / L);
+    const Eigen::Vector3d k_star_vec = B * frac;
 
-    printf("LT minimum: λ_min = %.6f  E/spin = %.6f\n", E_min, E_per_spin);
+    idx3_t k_star_idx{};
+    for (int i = 0; i < 3; i++) {
+        long q = std::lround(frac[i]);
+        k_star_idx[i] = ((q % L) + L) % L;
+    }
+
+    printf("LT minimum: λ_min = %.6f  E/spin = %.6f  (%d restarts)\n",
+           E_min, E_per_spin, n_restart);
     // Print per-sublattice weight: sum of |components|² over the 3 spin dofs
     printf("Eigvec sublattice |s_α|² :");
     for (int s = 0; s < n_sl; s++) {
@@ -229,10 +341,6 @@ int main(int argc, char* argv[])
         H5Dclose(ds);
         H5Sclose(sp);
     };
-
-    // eigenvalue_map [Nk]
-    write_1d("eigenvalue_map", H5T_NATIVE_DOUBLE,
-             static_cast<hsize_t>(Nk), eigenvalue_map.data());
 
     // k_star_idx [3]
     {
