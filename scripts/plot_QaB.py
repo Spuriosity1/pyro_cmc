@@ -192,9 +192,12 @@ def main():
             continue
         qz = float(qz_str)
 
-        (_, _, _, _, _, _,
-         corr, corr_lookup, sl_positions, k_dims, n_spins, ssf_T, n_ssf) = load_file(fpath)
-
+        try:
+            (_, _, _, _, _, _,
+             corr, corr_lookup, sl_positions, k_dims, n_spins, ssf_T, n_ssf) = load_file(fpath)
+        except Exception as e:
+            print(f"{fpath}")
+            continue
         # Default /N gives the standard structure factor S(q); --per-site divides
         # by N again to give the intensive order parameter m^2 = S(Q)/N, so the
         # ordered Bragg peak overlaps across system sizes L.

@@ -9,6 +9,9 @@ import numpy as np
 import h5py
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib as mpl 
+mpl.rcParams["savefig.directory"] = os.getcwd()
+
 
 
 def load_file(path):
@@ -150,38 +153,42 @@ def plot_ssf(ax, file, args, title=""):
     diag = [c for c in ("xx", "yy", "zz") if c in S]
     data_3d = sum(S[c] for c in diag)
 
-    sa = args.slice_axis
+    # sa = args.slice_axis
     sl = args.slice_idx
-    x, y = kgrid_xy(k_dims, recip, slice_axis=sa)
 
-    # Build index tuple for the 2D slice
-    idx = [slice(None), slice(None), slice(None)]
-    idx[sa] = sl
-    idx = tuple(idx)  # applied as data_3d[t_idx][idx]
 
-    ax.set_title(title, fontsize=6)
+    ax[0].set_title(title, fontsize=6)
 
-    data = np.fft.fftshift(data_3d[t_idx][idx])
-    data /= n_spins
+    for sa in (0,1,2):
+        x, y = kgrid_xy(k_dims, recip, slice_axis=sa)
 
-    vmax = args.vmax
-    if args.vmin:
-        vmin = args.vmin
-    else:
-        vmin = max(data.min(), 1e-6 * vmax) if args.log else 0
-    norm = (mcolors.LogNorm(vmin=vmin, vmax=vmax) if args.log
-            else mcolors.Normalize(vmin=0, vmax=vmax))
-    a0, a1 = [a for a in range(3) if a != sa]
-    # For FCC: tile with the 4 nearest in-plane BCC shifts (±1,±1) so the
-    # full FCC reciprocal lattice is visible beyond one conventional cubic BZ.
-    shifts = ((0,0), (1,1), (1,-1), (-1,1), (-1,-1)) if args.fcc else ((0,0),)
-    for p, q in shifts:
-        xs = x + p * recip[a0][a0] + q * recip[a1][a0]
-        ys = y + p * recip[a0][a1] + q * recip[a1][a1]
-        c = ax.pcolormesh(xs, ys, data, cmap=args.cmap, norm=norm, shading="auto")
+        # Build index tuple for the 2D slice
+        idx = [slice(None), slice(None), slice(None)]
+        idx[sa] = sl
+        idx = tuple(idx)  # applied as data_3d[t_idx][idx]
 
-    label_axes(ax, slice_axis=sa)
-    ax.set_aspect("equal")
+
+        data = np.fft.fftshift(data_3d[t_idx][idx])
+        data /= n_spins
+
+        vmax = args.vmax
+        if args.vmin:
+            vmin = args.vmin
+        else:
+            vmin = max(data.min(), 1e-6 * vmax) if args.log else 0
+        norm = (mcolors.LogNorm(vmin=vmin, vmax=vmax) if args.log
+                else mcolors.Normalize(vmin=0, vmax=vmax))
+        a0, a1 = [a for a in range(3) if a != sa]
+        # For FCC: tile with the 4 nearest in-plane BCC shifts (±1,±1) so the
+        # full FCC reciprocal lattice is visible beyond one conventional cubic BZ.
+        shifts = ((0,0), (1,1), (1,-1), (-1,1), (-1,-1)) if args.fcc else ((0,0),)
+        for p, q in shifts:
+            xs = x + p * recip[a0][a0] + q * recip[a1][a0]
+            ys = y + p * recip[a0][a1] + q * recip[a1][a1]
+            c = ax[sa].pcolormesh(xs, ys, data, cmap=args.cmap, norm=norm, shading="auto")
+
+        label_axes(ax[sa], slice_axis=sa)
+        ax[sa].set_aspect("equal")
     return c
 
 
@@ -224,8 +231,8 @@ def main():
     p.add_argument("file", help="Path(s) to HDF5 file", nargs='+')
     p.add_argument("-t", "--t-index", type=int, default=None,
                    help="Temperature index into the SSF array (default: last = coldest)")
-    p.add_argument("--slice-axis", type=int, default=2, choices=[0, 1, 2],
-                   help="Which k-axis to fix for the 2D slice (default: 2 → hk0 plane)")
+    # p.add_argument("--slice-axis", type=int, default=2, choices=[0, 1, 2],
+    #                help="Which k-axis to fix for the 2D slice (default: 2 → hk0 plane)")
     p.add_argument("--slice-idx", type=int, default=0,
                    help="Index along --slice-axis to plot (default: 0)")
     p.add_argument("--log", action="store_true", help="Use logarithmic colour scale")
@@ -241,6 +248,17 @@ def main():
     args = p.parse_args()
     
     files = args.file
+
+    # Arrange panels in ascending numeric K order. Files without a numeric K
+    # token keep a stable order after those that have one.
+    def k_sort_key(f):
+        v = parse_params(f).get("K")
+        try:
+            return (0, float(v))
+        except (TypeError, ValueError):
+            return (1, 0.0)
+    files = sorted(files, key=k_sort_key)
+
     n_panels = len(files)
 
     fixed, varying_keys, all_params = split_fixed_varying(files)
@@ -255,18 +273,14 @@ def main():
     if fixed_str:
         suptitle += f"\n{fixed_str}"
 
-    fig, axes = plt.subplots(1, n_panels, figsize=(2 * n_panels, 3), sharex=True, sharey=True)
-
-    if n_panels == 1:
-        axes = [axes]
+    fig, axes = plt.subplots(3, n_panels, figsize=(2 * n_panels, 2*3), sharex=True, sharey=True, squeeze=False)
 
     fig.suptitle(suptitle)
 
-    c = [plot_ssf(ax, f, args, title=t) for ax, f, t in zip(axes, files, panel_titles)]
+    c = [plot_ssf(ax, f, args, title=t) for ax, f, t in zip(axes.T, files, panel_titles)]
     cax = fig.add_axes([0.05,0.9,0.3,0.02])
     plt.colorbar(c[0], cax=cax, orientation='horizontal')
         
-
     plt.tight_layout()
 
     if args.output:
