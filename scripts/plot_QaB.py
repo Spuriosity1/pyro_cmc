@@ -98,12 +98,15 @@ def main():
         description="Plot SSF intensity at Bragg/symmetry-equivalent q-points vs a scan parameter."
     )
     p.add_argument("file", help="Path(s) to HDF5 file", nargs='+')
-    p.add_argument("-x", "--x-axis", default=None,
-                   help="Tag to plot along the x-axis (default: temperature)")
-    p.add_argument("-s", "--series-axis", help="Tag to use as a series label")
+    p.add_argument("-x", "--x-axis", default="T",
+                   help="Parameter to plot along the x-axis (default: 'T' = "
+                        "temperature). Any other value is a filename tag.")
+    p.add_argument("-s", "--series-axis",
+                   help="Parameter to use as a series label; 'T' selects "
+                        "temperature, any other value is a filename tag.")
     p.add_argument("-t", "--t-index", type=int, default=None,
                    help="Temperature index into the SSF array (default: last = coldest); "
-                        "ignored when -x is not given (temperature mode)")
+                        "used only when neither -x nor -s is 'T'.")
     p.add_argument("--err-source", choices=["inter", "intra", "total", "both"],
                    default="inter",
                    help="Error bar source (default: inter). 'inter' = seed-to-seed "
@@ -123,21 +126,17 @@ def main():
     args = p.parse_args()
 
     files = filter_corrupted(args.file)
-    
-
 
     fixed, _, all_params = split_fixed_varying(files)
 
-    temp_mode = args.x_axis is None
-    x_label = "T" if temp_mode else args.x_axis
+    x_label = args.x_axis
+    # T is a genuine parameter: it is "in play" (so we expand each file over all
+    # its sampled temperatures) exactly when -x or -s asks for it. Otherwise we
+    # collapse to a single temperature (coldest, or --t-index).
+    uses_T = 'T' in (args.x_axis, args.series_axis)
 
-    if args.series_axis:
-        series_vals = sorted(set(pm.get(args.series_axis, '?') for pm in all_params))
-    else:
-        series_vals = [None]
-
-    def get_series(params):
-        return params.get(args.series_axis, '?') if args.series_axis else None
+    def fmt_val(v):
+        return f"{v:g}" if isinstance(v, float) else str(v)
 
     fig, axes = plt.subplots(2, 2, figsize=(10, 8))
     ax_flat = [axes[0, 0], axes[0, 1], axes[1, 0], axes[1, 1]]
@@ -157,35 +156,13 @@ def main():
         ax.set_xlabel(x_label)
         ax.set_ylabel(y_label)
 
-    try:
-        vals_np = [float(v) for v in series_vals]
-        cmap = plt.colormaps['viridis']
-        norm = mpl.colors.Normalize(min(vals_np), max(vals_np))
-        series_color = {v: cmap(norm(float(v))) for v in series_vals}
-    except:
-        colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
-        series_color = {v: colors[i % len(colors)] for i, v in enumerate(series_vals)}
-
-
-    series_data = {
-        v: {'x': [], 'I': [[], [], [], []],
-            'SE_inter': [[], [], [], []], 'SE_intra': [[], [], [], []]}
-        for v in series_vals
-    }
-
-    for fpath, params in zip(files, all_params):
-        if not temp_mode:
-            x_str = params.get(args.x_axis)
-            if x_str is None:
-                print(f"Warning: '{args.x_axis}' not found in {os.path.basename(fpath)}, skipping",
-                      file=sys.stderr)
-                continue
-            try:
-                x_val = float(x_str)
-            except ValueError:
-                x_val = x_str
-
-        qz_str = params.get('Q') or params.get('Qz')
+    # ---- load + expand each file into per-(file, temperature) records ----
+    # A record carries the merged parameter dict (filename tags + 'T'), from
+    # which both the x-axis and series values are read uniformly.
+    records = []
+    title_T = None
+    for fpath, file_params in zip(files, all_params):
+        qz_str = file_params.get('Q') or file_params.get('Qz')
         if qz_str is None:
             print(f"Warning: 'Q' or 'Qz' not found in {os.path.basename(fpath)}, skipping",
                   file=sys.stderr)
@@ -195,7 +172,7 @@ def main():
         try:
             (_, _, _, _, _, _,
              corr, corr_lookup, sl_positions, k_dims, n_spins, ssf_T, n_ssf) = load_file(fpath)
-        except Exception as e:
+        except Exception:
             print(f"{fpath}")
             continue
         # Default /N gives the standard structure factor S(q); --per-site divides
@@ -204,13 +181,14 @@ def main():
         norm = n_spins**2 if args.per_site else n_spins
 
         n_T = corr.shape[1]
-        if not temp_mode:
-            t_idx = args.t_index if args.t_index is not None else n_T - 1
-            if not (0 <= t_idx < n_T):
-                sys.exit(f"--t-index {t_idx} out of range [0, {n_T - 1}]")
-            t_indices = [t_idx]
-        else:
+        if uses_T:
             t_indices = range(n_T)
+        else:
+            t_idx0 = args.t_index if args.t_index is not None else n_T - 1
+            if not (0 <= t_idx0 < n_T):
+                sys.exit(f"--t-index {t_idx0} out of range [0, {n_T - 1}]")
+            t_indices = [t_idx0]
+            title_T = float(ssf_T[t_idx0])
 
         S = normalize_ssf(corr, corr_lookup, k_dims, n_ssf)
         diag = [c for c in ("xx", "yy", "zz") if c in S]
@@ -220,10 +198,6 @@ def main():
             continue
 
         var_inter, var_intra, n_seeds = load_ssf_variance(fpath)
-
-        S_inter = var_inter
-        S_intra= var_intra
-
 
         # Qz is in units of 2π/a_cubic; k_dims[i] = L for cubic supercell
         qi = qz_to_idx(qz, k_dims[0])
@@ -235,44 +209,86 @@ def main():
             (0,  0,  0),    # Gamma
         ]
 
-        ser = get_series(params)
-
         # Rank this file's three Bragg peaks by intensity so panel 0 always
         # shows the dominant peak for this seed, panel 1 the next, etc. Gamma
         # (q-point index 3) is pinned to the last panel. The ordering is fixed
-        # per file (evaluated at the reference/coldest temperature) so a given
-        # q-point stays in the same panel across the x-axis.
-        ref_t = (n_T - 1) if temp_mode else t_indices[0]
+        # per file (evaluated at the coldest temperature) so a given q-point
+        # stays in the same panel across the x-axis.
+        ref_t = n_T - 1
         ref_I = [sum(S[c][ref_t, i0, i1, i2] for c in diag)
                  for (i0, i1, i2) in q_indices[:3]]
         perm = list(np.argsort(ref_I)[::-1]) + [3]  # perm[panel] -> q-point index
 
         for t_idx in t_indices:
-            x_val = ssf_T[t_idx] if temp_mode else x_val  # noqa: F821 (x_val set above for non-temp)
-            series_data[ser]['x'].append(x_val)
+            pm = dict(file_params)
+            pm['T'] = float(ssf_T[t_idx])
+
+            x_raw = pm.get(args.x_axis)
+            if x_raw is None:
+                print(f"Warning: '{args.x_axis}' not found in {os.path.basename(fpath)}, skipping",
+                      file=sys.stderr)
+                continue
+            try:
+                x_val = float(x_raw)
+            except (TypeError, ValueError):
+                x_val = x_raw
+
+            ser = pm.get(args.series_axis) if args.series_axis else None
             n_per_seed = n_ssf[t_idx] / n_seeds if n_seeds else np.nan
+
+            I, SE_inter, SE_intra = [], [], []
             for panel in range(len(q_indices)):
                 i0, i1, i2 = q_indices[perm[panel]]
-                intensity = sum(S[c][t_idx, i0, i1, i2] for c in diag) / norm
-                series_data[ser]['I'][panel].append(intensity)
+                I.append(sum(S[c][t_idx, i0, i1, i2] for c in diag) / norm)
 
-                if S_inter is not None and n_seeds is not None:
-                    W_inter = sum(S_inter[c][t_idx, i0, i1, i2] for c in diag)
-                    se_inter = se_from_inter(W_inter, n_seeds, norm)
-                # elif S2 is not None and n_seeds is not None:
-                #     W_q = sum(S2[c][t_idx, i0, i1, i2] for c in diag)
-                #     se_inter = cross_seed_se(W_q, intensity, n_seeds, n_ssf[t_idx], n_spins)
+                if var_inter is not None and n_seeds is not None:
+                    W_inter = sum(var_inter[c][t_idx, i0, i1, i2] for c in diag)
+                    SE_inter.append(se_from_inter(W_inter, n_seeds, norm))
                 else:
-                    se_inter = np.nan
+                    SE_inter.append(np.nan)
 
-                if S_intra is not None and n_seeds is not None:
-                    W_intra = sum(S_intra[c][t_idx, i0, i1, i2] for c in diag)
-                    se_intra = se_from_intra(W_intra, n_seeds, n_per_seed, norm)
+                if var_intra is not None and n_seeds is not None:
+                    W_intra = sum(var_intra[c][t_idx, i0, i1, i2] for c in diag)
+                    SE_intra.append(se_from_intra(W_intra, n_seeds, n_per_seed, norm))
                 else:
-                    se_intra = np.nan
+                    SE_intra.append(np.nan)
 
-                series_data[ser]['SE_inter'][panel].append(se_inter)
-                series_data[ser]['SE_intra'][panel].append(se_intra)
+            records.append({'x': x_val, 'ser': ser,
+                            'I': I, 'SE_inter': SE_inter, 'SE_intra': SE_intra})
+
+    if not records:
+        sys.exit("No data to plot — check the requested -x/-s parameters and that "
+                 "the Qz tag exists in the filenames.")
+
+    # ---- derive series values + colours from the collected records ----
+    series_vals = sorted(set(r['ser'] for r in records),
+                         key=lambda v: (v is None, v))
+
+    try:
+        vals_np = [float(v) for v in series_vals]
+        cmap = plt.colormaps['viridis']
+        # T spans a log-spaced schedule, so colour it on a log scale.
+        if args.series_axis == 'T' and min(vals_np) > 0:
+            cnorm = mpl.colors.LogNorm(min(vals_np), max(vals_np))
+        else:
+            cnorm = mpl.colors.Normalize(min(vals_np), max(vals_np))
+        series_color = {v: cmap(cnorm(float(v))) for v in series_vals}
+    except (TypeError, ValueError):
+        colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+        series_color = {v: colors[i % len(colors)] for i, v in enumerate(series_vals)}
+
+    series_data = {
+        v: {'x': [], 'I': [[], [], [], []],
+            'SE_inter': [[], [], [], []], 'SE_intra': [[], [], [], []]}
+        for v in series_vals
+    }
+    for r in records:
+        d = series_data[r['ser']]
+        d['x'].append(r['x'])
+        for panel in range(4):
+            d['I'][panel].append(r['I'][panel])
+            d['SE_inter'][panel].append(r['SE_inter'][panel])
+            d['SE_intra'][panel].append(r['SE_intra'][panel])
 
     plotted_any = False
     for ser in series_vals:
@@ -281,7 +297,7 @@ def main():
             continue
         order = np.argsort(d['x'])
         x_sorted = np.array(d['x'])[order]
-        label = str(ser) if ser is not None else None
+        label = fmt_val(ser) if ser is not None else None
         color = series_color[ser]
         for panel, ax in enumerate(ax_flat):
             I_sorted = np.array(d['I'][panel])[order]
@@ -317,10 +333,8 @@ def main():
         plotted_any = True
 
     if not plotted_any:
-        if temp_mode:
-            sys.exit("No data to plot — check that Qz tag exists in the filenames.")
-        else:
-            sys.exit("No data to plot — check that --x-axis and Qz tags exist in the filenames.")
+        sys.exit("No data to plot — check the requested -x/-s parameters and that "
+                 "the Qz tag exists in the filenames.")
 
     if args.series_axis:
         ax_flat[0].legend(title=args.series_axis, fontsize=8)
@@ -331,10 +345,13 @@ def main():
 
     fixed_str = "  ".join(f"{k}={v}" for k, v in fixed.items())
 
-    if temp_mode:
-        suptitle = r"$S(\mathbf{q})$ at symmetry-equivalent wavevectors vs $T$"
+    base = r"$S(\mathbf{q})$ at symmetry-equivalent wavevectors"
+    if args.x_axis == 'T':
+        suptitle = base + r" vs $T$"
+    elif args.series_axis == 'T':
+        suptitle = base + r" (series: $T$)"
     else:
-        suptitle = r"$S(\mathbf{q})$ at symmetry-equivalent wavevectors, T=" + str(ssf_T[t_idx])
+        suptitle = base + (f", T={title_T:g}" if title_T is not None else "")
     if fixed_str:
         suptitle += f"\n{fixed_str}"
     fig.suptitle(suptitle)
