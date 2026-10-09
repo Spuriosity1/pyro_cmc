@@ -3,21 +3,19 @@
 vs a scan parameter (-x), with series labelling (-s), à la plot_QaB.py.
 
 The spiral wavevector Q has a three-arm star {(0,0,Q), (Q,0,0), (0,Q,0)}. For
-each file the three peaks are ranked by intensity at a reference temperature
-into Q1 >= Q2 >= Q3 (regardless of the order they appear in the file), and the
-ratio S(Q2)/S(Q1) in [0, 1] is plotted (Q1 is the dominant peak, Q2 the
+each file the three peaks are ranked by intensity independently at every
+temperature into Q1 >= Q2 >= Q3 (regardless of the order they appear in the
+file), and the ratio S(Q2)/S(Q1) in [0, 1] is plotted (Q1 is the dominant peak,
+Q2 the
 subdominant one that may be small). A perfectly single-Q spiral drives the ratio
 toward 0; a symmetric multi-Q / paramagnetic state drives it toward 1.
 """
 
-from plot_ssf import load_file, normalize_ssf, split_fixed_varying
-from plot_QaB import (qz_to_idx, load_ssf_variance, se_from_inter,
-                      se_from_intra, filter_corrupted)
+from bragg import load_records, se_from_inter, se_from_intra
 import argparse
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-import os
 import sys
 
 
@@ -31,11 +29,68 @@ def ratio_se(A, B, seA, seB):
         abs(seA / B)
 
 
-def main():
-    p = argparse.ArgumentParser(
-        description="Plot the ratio S(Q2)/S(Q1) of the two strongest spiral "
-                    "star-point Bragg peaks vs a scan parameter."
-    )
+def _peak_se(r, idx, err_source):
+    """Per-spin SE of one Bragg intensity (index into the record's sorted
+    arms) from the carried variance arrays; NaN when they are absent (e.g. a
+    .bragg.csv input, which drops them)."""
+    if r['var_inter'] is None or r['n_seeds'] is None:
+        return np.nan
+    si = sj = np.nan
+    if err_source in ("inter", "total"):
+        si = se_from_inter(r['var_inter'][idx], r['n_seeds'], r['n_spins'])
+    if err_source in ("intra", "total") and r['var_intra'] is not None:
+        sj = se_from_intra(r['var_intra'][idx], r['n_seeds'],
+                           r['n_per_seed'], r['n_spins'])
+    parts = [v for v in (si, sj) if np.isfinite(v)]
+    return np.sqrt(sum(v ** 2 for v in parts)) if parts else np.nan
+
+
+def load_and_expand(args):
+    # T is a genuine parameter: expand each file over all its sampled
+    # temperatures exactly when -x or -s asks for it; otherwise collapse to a
+    # single temperature (coldest, or --t-index). load_records reads either raw
+    # *.out.h5 files or a pre-extracted *.bragg.csv summary.
+    uses_T = 'T' in (args.x_axis, args.series_axis)
+    records_b, title_T, fixed = load_records(args.file, uses_T, args.t_index)
+
+    records = []
+    for r in records_b:
+        pm = r['pm']
+        x_raw = pm.get(args.x_axis)
+        if x_raw is None:
+            print(f"Warning: '{args.x_axis}' not found in a record, skipping",
+                  file=sys.stderr)
+            continue
+        try:
+            x_val = float(x_raw)
+        except (TypeError, ValueError):
+            x_val = x_raw
+
+        ser = pm.get(args.series_axis) if args.series_axis else None
+
+        # The arms are already ranked per T into [Q1, Q2, Q3, Γ]: Q1 is the
+        # dominant peak, Q2 the subdominant one that may be small, so the ratio
+        # Q2/Q1 stays bounded in [0, 1]. (Re-ranking per T rather than once at a
+        # reference T keeps Q2 on the true subdominant peak — a fixed ranking
+        # picks the arm that dies for ~half the seeds, inflating the variance.)
+        den, num = r['I'][0], r['I'][1]
+        R = num / den if den != 0 else np.nan
+
+        # norm cancels in the ratio, so the SE is propagated on the per-spin
+        # intensities. Absent variance (a .bragg.csv input) leaves SE = NaN and
+        # the caller falls back to seed-to-seed spread.
+        if r['var_inter'] is not None and r['n_spins']:
+            SE = ratio_se(num / r['n_spins'], den / r['n_spins'],
+                          _peak_se(r, 1, args.err_source),
+                          _peak_se(r, 0, args.err_source))
+        else:
+            SE = np.nan
+
+        records.append({'pm': pm, 'x': x_val, 'ser': ser, 'R': R, 'SE': SE})
+
+    return records, title_T, fixed
+
+def provide_selector_args(p : argparse.ArgumentParser):
     p.add_argument("file", help="Path(s) to HDF5 file", nargs='+')
     p.add_argument("-x", "--x-axis", default="T",
                    help="Parameter to plot along the x-axis (default: 'T' = "
@@ -50,121 +105,27 @@ def main():
                    default="inter",
                    help="Error bar source for the propagated ratio SE "
                         "(default: inter)")
+
+def main():
+    p = argparse.ArgumentParser(
+        description="Plot the ratio S(Q2)/S(Q1) of the two strongest spiral "
+                    "star-point Bragg peaks vs a scan parameter."
+    )
+    provide_selector_args(p)
     p.add_argument("--vmin", type=float, default=None)
     p.add_argument("--vmax", type=float, default=None)
     p.add_argument("-o", "--output", default=None,
                    help="Save figure to file instead of displaying")
     args = p.parse_args()
 
-    files = filter_corrupted(args.file)
-
-    fixed, _, all_params = split_fixed_varying(files)
 
     x_label = args.x_axis
-    # T is a genuine parameter: expand each file over all its sampled
-    # temperatures exactly when -x or -s asks for it; otherwise collapse to a
-    # single temperature (coldest, or --t-index).
-    uses_T = 'T' in (args.x_axis, args.series_axis)
 
     def fmt_val(v):
         return f"{v:g}" if isinstance(v, float) else str(v)
 
     # ---- load + expand each file into per-(file, temperature) records ----
-    records = []
-    title_T = None
-    for fpath, file_params in zip(files, all_params):
-        qz_str = file_params.get('Q') or file_params.get('Qz')
-        if qz_str is None:
-            print(f"Warning: 'Q' or 'Qz' not found in {os.path.basename(fpath)}, skipping",
-                  file=sys.stderr)
-            continue
-        qz = float(qz_str)
-
-        try:
-            (_, _, _, _, _, _,
-             corr, corr_lookup, sl_positions, k_dims, n_spins, ssf_T, n_ssf) = load_file(fpath)
-        except Exception:
-            print(f"{fpath}")
-            continue
-
-        n_T = corr.shape[1]
-        if uses_T:
-            t_indices = range(n_T)
-        else:
-            t_idx0 = args.t_index if args.t_index is not None else n_T - 1
-            if not (0 <= t_idx0 < n_T):
-                sys.exit(f"--t-index {t_idx0} out of range [0, {n_T - 1}]")
-            t_indices = [t_idx0]
-            title_T = float(ssf_T[t_idx0])
-
-        S = normalize_ssf(corr, corr_lookup, k_dims, n_ssf)
-        diag = [c for c in ("xx", "yy", "zz") if c in S]
-        if not diag:
-            print(f"Warning: no diagonal correlators in {os.path.basename(fpath)}, skipping",
-                  file=sys.stderr)
-            continue
-
-        var_inter, var_intra, n_seeds = load_ssf_variance(fpath)
-
-        # Qz is in units of 2π/a_cubic; k_dims[i] = L for cubic supercell.
-        qi = qz_to_idx(qz, k_dims[0])
-        star = [(0, 0, qi), (qi, 0, 0), (0, qi, 0)]  # the three spiral arms
-
-        # Rank the three star points by intensity once, at the coldest
-        # temperature, so Q1/Q2/Q3 stay the same physical q-point across the
-        # whole x-axis for this file.
-        ref_t = n_T - 1
-        ref_I = [sum(S[c][ref_t, i0, i1, i2] for c in diag)
-                 for (i0, i1, i2) in star]
-        perm = list(np.argsort(ref_I)[::-1])  # perm[rank] -> star index; 0=Q1
-
-        q1 = star[perm[0]]
-        q2 = star[perm[1]]
-
-        for t_idx in t_indices:
-            pm = dict(file_params)
-            pm['T'] = float(ssf_T[t_idx])
-
-            x_raw = pm.get(args.x_axis)
-            if x_raw is None:
-                print(f"Warning: '{args.x_axis}' not found in {os.path.basename(fpath)}, skipping",
-                      file=sys.stderr)
-                continue
-            try:
-                x_val = float(x_raw)
-            except (TypeError, ValueError):
-                x_val = x_raw
-
-            ser = pm.get(args.series_axis) if args.series_axis else None
-            n_per_seed = n_ssf[t_idx] / n_seeds if n_seeds else np.nan
-
-            def intensity(q):
-                return sum(S[c][t_idx, q[0], q[1], q[2]] for c in diag)
-
-            def se(q):
-                if var_inter is None or n_seeds is None:
-                    return np.nan
-                # norm cancels in the ratio, so SE is computed on the raw
-                # (per-spin, /n_spins) intensity consistently with intensity().
-                si = sj = np.nan
-                if args.err_source in ("inter", "total"):
-                    W = sum(var_inter[c][t_idx, q[0], q[1], q[2]] for c in diag)
-                    si = se_from_inter(W, n_seeds, n_spins)
-                if args.err_source in ("intra", "total") and var_intra is not None:
-                    W = sum(var_intra[c][t_idx, q[0], q[1], q[2]] for c in diag)
-                    sj = se_from_intra(W, n_seeds, n_per_seed, n_spins)
-                parts = [v for v in (si, sj) if np.isfinite(v)]
-                return np.sqrt(sum(v ** 2 for v in parts)) if parts else np.nan
-
-            # Q2/Q1: Q1 is the dominant (large) peak, Q2 the subdominant one
-            # that may be small, so this ratio stays bounded in [0, 1].
-            num, den = intensity(q2), intensity(q1)
-            R = num / den if den != 0 else np.nan
-            # intensity() is summed over samples then /n_spins in normalize_ssf;
-            # se() returns the per-spin SE, matching the num/den scaling.
-            SE = ratio_se(num / n_spins, den / n_spins, se(q2), se(q1))
-
-            records.append({'pm': pm, 'x': x_val, 'ser': ser, 'R': R, 'SE': SE})
+    records, title_T, fixed = load_and_expand(args)
 
     if not records:
         sys.exit("No data to plot — check the requested -x/-s parameters and that "

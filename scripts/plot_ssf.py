@@ -71,7 +71,8 @@ def parse_params(path):
     """Extract key=value tokens from a filename stem into an ordered dict.
 
     Strips all extensions (e.g. .avg.h5).  Bare tokens are split at the
-    first digit boundary: 'b512' -> {'b': '512'}, 'merge64' -> {'merge': '64'}.
+    first digit boundary, keeping a leading sign with the number:
+    'b512' -> {'b': '512'}, 'K-0.002' -> {'K': '-0.002'}.
     Pure-alpha bare tokens like 'ec' are stored as {'ec': ''}.
     """
     stem = re.sub(r'(\.[a-zA-Z][a-zA-Z0-9]*)+$', '', os.path.basename(path))
@@ -84,7 +85,7 @@ def parse_params(path):
             k, v = token.split("=", 1)
             params[k] = v
         else:
-            m = re.match(r'^([A-Za-z]+)(\d.*)$', token)
+            m = re.match(r'^([A-Za-z]+)(-?\d.*)$', token)
             if m:
                 params[m.group(1)] = m.group(2)
             else:

@@ -103,7 +103,7 @@ ltgs_bin = executable('ltgs',
   install: true
   )
 
-py_scripts = ['plot_ssf', 'plot_q_dep', 'plot_QaB', 'plot_ratio', 'acc_runs', 'ltgs_drive']
+py_scripts = ['plot_ssf', 'plot_q_dep', 'plot_QaB', 'plot_ratio', 'plot_KT_phasedia', 'acc_runs', 'ltgs_drive']
 
 if get_option('dev')
   foreach s : py_scripts
@@ -119,6 +119,7 @@ else
       'scripts/plot_q_dep.py',
       'scripts/plot_QaB.py',
       'scripts/plot_ratio.py',
+      'scripts/plot_KT_phasedia.py',
       'scripts/acc_runs.py',
       'scripts/ltgs_drive.py',
     ],

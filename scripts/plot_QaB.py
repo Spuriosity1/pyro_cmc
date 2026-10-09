@@ -1,96 +1,12 @@
 #!/usr/bin/env python3
 """Plot SSF intensity at (0,0,Qz) and symmetry-equivalent q-points vs a scan parameter."""
 
-from plot_ssf import load_file, normalize_ssf, split_fixed_varying
+from bragg import load_records, se_from_inter, se_from_intra
 import argparse
 import numpy as np
-import h5py
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-import os
 import sys
-
-
-def qz_to_idx(qz_frac, k_dim):
-    return int(round(qz_frac * k_dim)) % k_dim
-
-
-def load_ssf_variance(path):
-    """Load var_inter / var_intra / n_seeds from a merged HDF5 file (acc_runs.py).
-
-    var_inter : (biased, /K) variance of the per-seed mean S(q) across seeds.
-    var_intra : sum over seeds of the per-seed (within-run) single-sample
-                variance of S(q).
-    Both are already sublattice-contracted scalars (the phase fold is done in
-    the C++ writer / propagated linearly through acc_runs), stored as
-    [n_corr, n_T, n_k, 2] with the last axis carrying the Re/Im-part variances.
-    Returns (var_inter, var_intra, n_seeds) as dicts label -> [n_T, k0,k1,k2]
-    (real, = Re-part variance), or None for a variance whose dataset is absent.
-    """
-    def reshape_var(raw, corr_lookup, k_dims):
-        # Re-part variance is what matters for the real observable S(q).
-        real = raw[..., 0]                            # [n_corr, n_T, n_k]
-        k0, k1, k2 = k_dims
-        real = real.reshape(len(corr_lookup), -1, k0, k1, k2)
-        return {label: real[i] for i, label in enumerate(corr_lookup)}
-
-    var_inter = var_intra = None
-    with h5py.File(path, "r") as f:
-        ssf = f["/ssf"]
-        k_dims = ssf.attrs["k_dims"][:].astype(int)
-        corr_lookup = [s.decode() if isinstance(s, bytes) else s
-                       for s in ssf["corr_lookup"][:]]
-        if "var_inter" in ssf:
-            var_inter = reshape_var(ssf["var_inter"][:], corr_lookup, k_dims)
-        if "var_intra" in ssf:
-            var_intra = reshape_var(ssf["var_intra"][:], corr_lookup, k_dims)
-        # minimise output has no /energy group (single T=0 snapshot); a raw
-        # single-seed run has one but no n_seeds. Either way n_seeds is None,
-        # which disables the seed-to-seed error bars and falls back to plain
-        # markers below.
-        energy = f["/energy"] if "energy" in f else None
-        n_seeds = (int(energy["n_seeds"][()])
-                   if energy is not None and "n_seeds" in energy else None)
-    return var_inter, var_intra, n_seeds
-
-
-def se_from_inter(W_inter, n_seeds, n_spins):
-    """Standard error of the multi-seed mean SSF from var_inter.
-
-    W_inter : var_inter[k_q], summed over diagonal components — the biased
-              (/K) population variance of the per-seed mean S(q) across seeds.
-    Bessel-corrected SE of the K-seed mean: sqrt(W_inter / (K-1)) / n_spins.
-    """
-    if n_seeds is None or n_seeds < 2:
-        return np.nan
-    return np.sqrt(max(float(W_inter), 0.0) / (n_seeds - 1)) / n_spins
-
-
-def se_from_intra(W_intra, n_seeds, n_per_seed, n_spins):
-    """Standard error contribution to the multi-seed mean SSF from
-    within-run (intra-seed) sampling noise.
-
-    W_intra    : var_intra[k_q], summed over diagonal components -
-                 Σ_seeds Var[single MC sample of S(q) | seed].
-    n_per_seed : MC samples per seed at this temperature (= n_ssf_t / K).
-
-    Treats samples within a seed as independent (no autocorrelation
-    correction) and seeds as independent, consistent with se_from_inter().
-    """
-    if n_seeds is None or n_seeds < 1 or not n_per_seed or n_per_seed <= 0:
-        return np.nan
-    return np.sqrt(max(float(W_intra), 0.0) / (n_seeds**2 * n_per_seed)) / n_spins
-
-def filter_corrupted(files: list):
-    clean = []
-    for f in files:
-        try:
-            with h5py.File(f) as fp:
-                clean.append(f)
-        except Exception as e:
-            print(f"File {f} corrupt: {e}")
-    return clean
-
 
 
 def main():
@@ -125,15 +41,18 @@ def main():
                    help="Save figure to file instead of displaying")
     args = p.parse_args()
 
-    files = filter_corrupted(args.file)
-
-    fixed, _, all_params = split_fixed_varying(files)
-
     x_label = args.x_axis
     # T is a genuine parameter: it is "in play" (so we expand each file over all
     # its sampled temperatures) exactly when -x or -s asks for it. Otherwise we
     # collapse to a single temperature (coldest, or --t-index).
     uses_T = 'T' in (args.x_axis, args.series_axis)
+
+    # Bragg records come from either raw *.out.h5 files or a pre-extracted
+    # *.bragg.csv summary; load_records dispatches on the filename. Each record
+    # carries the merged parameter dict (filename tags + 'T'), the four
+    # intensities [Q1, Q2, Q3, Γ] (arms already sorted desc), n_spins, and the
+    # per-seed variance arrays (None when they came from a lossy .bragg.csv).
+    records_b, title_T, fixed = load_records(args.file, uses_T, args.t_index)
 
     def fmt_val(v):
         return f"{v:g}" if isinstance(v, float) else str(v)
@@ -156,105 +75,44 @@ def main():
         ax.set_xlabel(x_label)
         ax.set_ylabel(y_label)
 
-    # ---- load + expand each file into per-(file, temperature) records ----
-    # A record carries the merged parameter dict (filename tags + 'T'), from
-    # which both the x-axis and series values are read uniformly.
+    # ---- derive x / series / error bars from each Bragg record ----
+    # The four intensities are already [Q1, Q2, Q3, Γ] (arms ranked per T),
+    # matching the four panel labels above.
     records = []
-    title_T = None
-    for fpath, file_params in zip(files, all_params):
-        qz_str = file_params.get('Q') or file_params.get('Qz')
-        if qz_str is None:
-            print(f"Warning: 'Q' or 'Qz' not found in {os.path.basename(fpath)}, skipping",
+    for r in records_b:
+        pm = r['pm']
+        x_raw = pm.get(args.x_axis)
+        if x_raw is None:
+            print(f"Warning: '{args.x_axis}' not found in a record, skipping",
                   file=sys.stderr)
             continue
-        qz = float(qz_str)
-
         try:
-            (_, _, _, _, _, _,
-             corr, corr_lookup, sl_positions, k_dims, n_spins, ssf_T, n_ssf) = load_file(fpath)
-        except Exception:
-            print(f"{fpath}")
-            continue
+            x_val = float(x_raw)
+        except (TypeError, ValueError):
+            x_val = x_raw
+
+        ser = pm.get(args.series_axis) if args.series_axis else None
+
         # Default /N gives the standard structure factor S(q); --per-site divides
         # by N again to give the intensive order parameter m^2 = S(Q)/N, so the
         # ordered Bragg peak overlaps across system sizes L.
-        norm = n_spins**2 if args.per_site else n_spins
+        norm = r['n_spins']**2 if args.per_site else r['n_spins']
 
-        n_T = corr.shape[1]
-        if uses_T:
-            t_indices = range(n_T)
-        else:
-            t_idx0 = args.t_index if args.t_index is not None else n_T - 1
-            if not (0 <= t_idx0 < n_T):
-                sys.exit(f"--t-index {t_idx0} out of range [0, {n_T - 1}]")
-            t_indices = [t_idx0]
-            title_T = float(ssf_T[t_idx0])
+        I = [r['I'][panel] / norm for panel in range(4)]
+        SE_inter, SE_intra = [], []
+        for panel in range(4):
+            if r['var_inter'] is not None:
+                SE_inter.append(se_from_inter(r['var_inter'][panel], r['n_seeds'], norm))
+            else:
+                SE_inter.append(np.nan)
+            if r['var_intra'] is not None:
+                SE_intra.append(se_from_intra(r['var_intra'][panel], r['n_seeds'],
+                                              r['n_per_seed'], norm))
+            else:
+                SE_intra.append(np.nan)
 
-        S = normalize_ssf(corr, corr_lookup, k_dims, n_ssf)
-        diag = [c for c in ("xx", "yy", "zz") if c in S]
-        if not diag:
-            print(f"Warning: no diagonal correlators in {os.path.basename(fpath)}, skipping",
-                  file=sys.stderr)
-            continue
-
-        var_inter, var_intra, n_seeds = load_ssf_variance(fpath)
-
-        # Qz is in units of 2π/a_cubic; k_dims[i] = L for cubic supercell
-        qi = qz_to_idx(qz, k_dims[0])
-
-        q_indices = [
-            (0,  0,  qi),   # (0, 0, Qz)
-            (qi, 0,  0),    # (Qz, 0, 0)
-            (0,  qi, 0),    # (0, Qz, 0)
-            (0,  0,  0),    # Gamma
-        ]
-
-        # Rank this file's three Bragg peaks by intensity so panel 0 always
-        # shows the dominant peak for this seed, panel 1 the next, etc. Gamma
-        # (q-point index 3) is pinned to the last panel. The ordering is fixed
-        # per file (evaluated at the coldest temperature) so a given q-point
-        # stays in the same panel across the x-axis.
-        ref_t = n_T - 1
-        ref_I = [sum(S[c][ref_t, i0, i1, i2] for c in diag)
-                 for (i0, i1, i2) in q_indices[:3]]
-        perm = list(np.argsort(ref_I)[::-1]) + [3]  # perm[panel] -> q-point index
-
-        for t_idx in t_indices:
-            pm = dict(file_params)
-            pm['T'] = float(ssf_T[t_idx])
-
-            x_raw = pm.get(args.x_axis)
-            if x_raw is None:
-                print(f"Warning: '{args.x_axis}' not found in {os.path.basename(fpath)}, skipping",
-                      file=sys.stderr)
-                continue
-            try:
-                x_val = float(x_raw)
-            except (TypeError, ValueError):
-                x_val = x_raw
-
-            ser = pm.get(args.series_axis) if args.series_axis else None
-            n_per_seed = n_ssf[t_idx] / n_seeds if n_seeds else np.nan
-
-            I, SE_inter, SE_intra = [], [], []
-            for panel in range(len(q_indices)):
-                i0, i1, i2 = q_indices[perm[panel]]
-                I.append(sum(S[c][t_idx, i0, i1, i2] for c in diag) / norm)
-
-                if var_inter is not None and n_seeds is not None:
-                    W_inter = sum(var_inter[c][t_idx, i0, i1, i2] for c in diag)
-                    SE_inter.append(se_from_inter(W_inter, n_seeds, norm))
-                else:
-                    SE_inter.append(np.nan)
-
-                if var_intra is not None and n_seeds is not None:
-                    W_intra = sum(var_intra[c][t_idx, i0, i1, i2] for c in diag)
-                    SE_intra.append(se_from_intra(W_intra, n_seeds, n_per_seed, norm))
-                else:
-                    SE_intra.append(np.nan)
-
-            records.append({'x': x_val, 'ser': ser,
-                            'I': I, 'SE_inter': SE_inter, 'SE_intra': SE_intra})
+        records.append({'x': x_val, 'ser': ser,
+                        'I': I, 'SE_inter': SE_inter, 'SE_intra': SE_intra})
 
     if not records:
         sys.exit("No data to plot — check the requested -x/-s parameters and that "
