@@ -48,7 +48,6 @@ class autocorr_manager : public abstract_manager {
     using history_t = std::vector<double>;
     std::vector<history_t> S_history; // format: S_history[tau_slot][x,y,z][tau]
 
-    const CMC::HeisenbergSpin* hs;
     bool finalised_ = false;
 
     void on_new_temp() override {
@@ -60,8 +59,8 @@ class autocorr_manager : public abstract_manager {
     void finalise(int idx);
 
     public:
-    autocorr_manager(const CMC::HeisenbergSpin* _s, size_t n_temperatures_reserve=0) :
-        hs(_s) {
+    autocorr_manager( size_t n_temperatures_reserve=0) 
+         {
         S_history.reserve(n_temperatures_reserve);
     }
 

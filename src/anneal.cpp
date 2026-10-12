@@ -193,8 +193,7 @@ int main (int argc, char *argv[]) {
     // temperature; the series are transformed into A(tau) on write.
     std::optional<autocorr_manager> acm;
     if (prog.get<bool>("--save_autocorrelation")) {
-        auto& objs = lat.get_objects<HeisenbergSpin>();
-        acm.emplace(&objs[objs.size() / 2], T_sample.size());
+        acm.emplace( T_sample.size());
     }
 
     size_t n_overrelax = prog.get<size_t>("--n_overrelax");
