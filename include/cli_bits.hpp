@@ -59,7 +59,7 @@ inline auto provide_physical_args(argparse::ArgumentParser& prog){
     
     prog.add_argument("--Q")
         .help("Nonzero spiral wavevector component in units of 2pi/a_cubic; J3 is set to minimise the spiral "
-              "energy given J2 and J4 (mutually exclusive with --J3). Rounded to nearest supercell-commensurate value.")
+              "energy given J2, J4 and K (mutually exclusive with --J3). Rounded to nearest supercell-commensurate value.")
         .scan<'g', double>();
     prog.add_argument("--spiral_axis", "-x")
         .help("Axis [0,1,2] (x,y,z) that the spiral wavevector --Q points along")
@@ -79,15 +79,21 @@ inline auto provide_physical_args(argparse::ArgumentParser& prog){
 }
 
 // Compute the J3 that makes a (0,0,Q) spiral stationary in the single-Q spiral
-// energy, given J2 and J4 (assumes the ferromagnetic convention |J1|=1). Qz is
-// in units of 2pi/a_cubic. Only J3 enters the cos(4q) term, so the stationarity
-// condition stays linear in J3 and inverts in closed form. J4 adds a cos(6q)
-// contribution, hence the c^2 term below. Derivation: scripts/spiral_Q.sage.
-// At J4=0 this reduces to the original (-4J2 + (1-2J2)/cos2q)/8.
-inline double J3_from_Qz(double J2, double J4, double Qz) {
+// energy, given J2, J4 and the nn1 biquadratic K (all in the ferromagnetic
+// convention |J1|=1). Qz is in units of 2pi/a_cubic. Only J3 enters the cos(4q)
+// term, so the stationarity condition stays linear in J3 and inverts in closed
+// form. J4 adds a cos(6q) contribution, hence the c^2 term below.
+//
+// The nn1 biquadratic (K/2)(S_i.S_j)^2 evaluates to (K/2)cos^2(q d_z) on the
+// spiral, and cos^2 = (1+cos(2q d_z))/2 feeds the SAME cos(4q) harmonic as J3
+// (the nn1 shell has d_z in {0,+-2}). It therefore only shifts the required J3
+// by a constant: J3(K) = J3(0) - K/8, independent of Q, J2, J4. Derivation and
+// numerical check: scripts/spiral_Q.sage.
+// At J4=K=0 this reduces to the original (-4J2 + (1-2J2)/cos2q)/8.
+inline double J3_from_Qz(double J2, double J4, double K, double Qz) {
     Qz *= 2 * M_PI / 8; // this 8 is from the conventional pyrochlore cell size
     const double c = std::cos(2*Qz);
-    return -(12*J4*c*c + 4*J2*c + 2*J2 - 2*J4 - 1) / (8*c);
+    return -(12*J4*c*c + 4*J2*c + 2*J2 - 2*J4 - 1) / (8*c) - K / 8;
 }
 
 // Round Qz (in units of 1/a_cubic) to the nearest value commensurate with an
@@ -119,7 +125,8 @@ inline double resolve_J3(const argparse::ArgumentParser& prog) {
         double J1 = prog.get<double>("--J1");
         double J2_eff = prog.get<double>("--J2") / std::abs(J1);
         double J4_eff = prog.get<double>("--J4") / std::abs(J1);
-        return J3_from_Qz(J2_eff, J4_eff, Qz) * std::abs(J1);
+        double K_eff  = prog.get<double>("--K")  / std::abs(J1);
+        return J3_from_Qz(J2_eff, J4_eff, K_eff, Qz) * std::abs(J1);
     }
     return prog.get<double>("--J3");
 }
