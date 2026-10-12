@@ -36,7 +36,7 @@ from collections import OrderedDict
 import numpy as np
 import h5py
 
-from plot_ssf import load_file, normalize_ssf, parse_params
+from ssf_backend import load_file, normalize_ssf, parse_params
 
 
 # ---------------------------------------------------------------------------

@@ -18,9 +18,10 @@ import glob
 import os
 import sys
 from datetime import datetime
+from tqdm import tqdm
 
 from bragg import extract_raw_records
-from plot_ssf import parse_params
+from ssf_backend import parse_params
 
 
 def gather(paths):
@@ -50,7 +51,8 @@ def main():
         sys.exit("No input files found.")
 
     records = []
-    for f in files:
+    print("Extracting raw records...")
+    for f in tqdm(files):
         try:
             recs, _ = extract_raw_records(f, parse_params(f), uses_T=True)
         except Exception as e:
@@ -63,7 +65,8 @@ def main():
 
     # Column order: filename parameters (first-seen), then the value columns.
     param_keys = []
-    for r in records:
+    print("Extracting keys...")
+    for r in tqdm(records):
         for k in r['pm']:
             if k != 'T' and k not in param_keys:
                 param_keys.append(k)
@@ -77,6 +80,8 @@ def main():
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         out = f"{base}_{ts}.bragg.csv"
 
+
+    print(f"Writing output to {out}...")
     with open(out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols)
         w.writeheader()
