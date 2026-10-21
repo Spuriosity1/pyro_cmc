@@ -12,7 +12,8 @@ toward 0; a symmetric multi-Q / paramagnetic state drives it toward 1.
 
 import argparse
 
-from plot_ratio import provide_selector_args, load_and_expand
+from plot_ratio import (provide_selector_args, load_and_expand,
+                        use_tex_serif, phase_boundary, draw_phase_boundary)
 import sys
 import numpy as np
 from scipy.optimize import curve_fit
@@ -34,6 +35,8 @@ def main():
                    help="Save figure to file instead of displaying")
     args = p.parse_args()
 
+    use_tex_serif()
+
     # ---- load + expand each file into per-(file, temperature) records ----
     records, title_T, fixed = load_and_expand(args)
 
@@ -41,21 +44,23 @@ def main():
         sys.exit("No data to plot — check the requested -x/-s parameters and that "
                  "the Qz tag exists in the filenames.")
 
-    # ---- accumulate runs that differ only in 'seed' ----
-    # Group by every parameter except the seed (unless seed is itself an axis),
-    # then plot the mean of the per-seed ratios with their sample stdev as the
-    # error bar. A lone-seed group keeps its propagated within-file SE instead.
-    drop = {'seed'} - {args.x_axis, args.series_axis}
+    # ---- accumulate runs that differ only in the binned parameters ----
+    # Group by every parameter except the binned ones (unless a binned
+    # parameter is itself an axis), then plot the mean of the accumulated ratios
+    # with their sample stdev as the error bar. A lone-member group keeps its
+    # propagated within-file SE instead. 'seed' is binned by default; --bin adds
+    # others (e.g. a J3 that merely tracks the scanned K).
+    drop = set(args.bin) - {args.x_axis, args.series_axis}
     groups = {}
     for r in records:
         key = tuple(sorted((k, v) for k, v in r['pm'].items() if k not in drop))
         groups.setdefault(key, []).append(r)
 
     # Each ax2 trace is one "trace group": the unique combination of parameters
-    # that are neither the x-axis, the series-axis, nor the seed (already
-    # averaged over) — e.g. a distinct L. Fixed parameters are excluded so the
-    # trace labels stay concise.
-    trace_drop = {args.x_axis, args.series_axis, 'seed'} | set(fixed.keys())
+    # that are neither the x-axis, the series-axis, nor binned (already averaged
+    # over) — e.g. a distinct L. Fixed parameters are excluded so the trace
+    # labels stay concise.
+    trace_drop = {args.x_axis, args.series_axis} | set(args.bin) | set(fixed.keys())
 
     points = []
     for grp in groups.values():
@@ -75,8 +80,8 @@ def main():
     trace_vals = sorted(set(p['trace'] for p in points))
     multi_trace = len(trace_vals) > 1
 
-    def model_(x, m, x0):
-        return m * (x - x0)
+    def model_(x, m, x0, m2):
+        return  (x - x0)*(m2*x+m) + args.eps
 
     fig, ax = plt.subplots()
     fig2, ax2 = plt.subplots()
@@ -93,10 +98,6 @@ def main():
             d['x'].append(p['x'])
             d['R'].append(p['R'])
             d['SE'].append(p['SE'])
-
-        fit_xint = []
-        fit_yval = []
-        sigma_fit_xint = []
 
         for ser in series_vals:
             d = series_data[ser]
@@ -116,39 +117,39 @@ def main():
 
             ax.errorbar(x_sorted, R_sorted, SE_sorted, label=label, lw=0, marker='s')
 
+            # Draw the vanishing-peak extrapolation on the diagnostic axes; the
+            # (K, T) boundary itself is assembled once below via phase_boundary.
             R_finite = R_sorted > args.eps
-            xx = x_sorted[R_finite]
-            yy = R_sorted[R_finite]
-            sigma_yy = SE_sorted[R_finite]
-
             try:
-                popt, pcov = curve_fit(model_, xx, yy, [1, -0.1], sigma=sigma_yy)
-                ax.plot(x_sorted, model_(x_sorted, *popt), color=ax.lines[-1].get_color())
-                fit_xint.append(popt[1])
-                fit_yval.append(float(ser))
-                sigma_fit_xint.append(np.sqrt(pcov[1, 1]))
+                popt, _ = curve_fit(model_, x_sorted[R_finite],
+                                    R_sorted[R_finite], [1, -0.1, 0],
+                                    sigma=SE_sorted[R_finite])
+                ax.plot(x_sorted, model_(x_sorted, *popt),
+                        color=ax.lines[-1].get_color())
             except Exception:
                 print(f"Fit failed for series {ser}"
                       + (f" ({trace_label})" if trace_label else ""))
 
-        if not fit_xint:
-            continue
-        order2 = np.argsort(fit_yval)
-        ax2.errorbar(np.array(fit_xint)[order2], np.array(fit_yval)[order2],
-                     xerr=np.array(sigma_fit_xint)[order2], marker='s',
-                     label=trace_label if trace_label else None)
-
     ax.axhline(args.eps, ls=':', color='k')
-    ax.set_xlabel(args.x_axis)
-    ax.set_ylabel("ratio $S(Q_1)/S(Q_2)$")
-
-    ax2.set_xlabel(args.x_axis)
-    ax2.set_ylabel(args.series_axis)
-    if multi_trace:
-        ax2.legend()
-
+    ax.set_xlabel(r"$S(S+1)\kappa/|J_1|$")
+    ax.set_ylabel(r"$S(\bm{q}_{\rm PG1})\,/\,S(\bm{q}_{\rm B})$")
     ax.set_ylim(0, None)
-    fig.legend()
+    fig.legend(fontsize=7)
+
+    # ---- fig2: polished (K, T) phase boundary where the PG1 peak vanishes ----
+    boundary = phase_boundary(args, args.eps)
+    draw_phase_boundary(ax2, boundary,
+                        labeler=(fmt_trace if multi_trace else None))
+    ax2.set_xlabel(r"$S(S+1)\kappa/|J_1|$")
+    ax2.set_ylabel(r"$T/|J_1|$")
+    ax2.grid(True, which='both', lw=0.3, alpha=0.4)
+    if multi_trace:
+        ax2.legend(title=r"$L$", fontsize=8)
+
+    fig2.tight_layout()
+    if args.output:
+        fig2.savefig(args.output, dpi=150, bbox_inches="tight")
+        print(f"Saved to {args.output}")
     plt.show()
 
 

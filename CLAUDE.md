@@ -56,6 +56,8 @@ Bond displacement tables are `static const std::vector<std::vector<ipos_t>>` key
 
 `--Jzz` controls local-frame XXZ anisotropy (J₁ coupling only); `Jzz=0` is isotropic Heisenberg. The six nn1 sublattice-pair couplings are registered separately.
 
+`--tetragonal` applies a magnetoelastic tetragonal distortion along `--tetra_axis` (default z): every coupling J₁–J₄ is scaled by `J·(1 + tetragonal·f)`, where `f = 1 − |d·scale|/|d|` is the fractional bond-length change under a scaling of the axis by `--tetra_scale` (default 0.98, matching the `strain_bond_table` notebook helper). Bonds perpendicular to the axis are unchanged. Each further-neighbour shell is split into sub-groups sharing a factor and registered via `tetra_bond_scale` (`include/cli_bits.hpp`). `tetragonal=0` is the isotropic limit (no-op). Default parameters reproduce the notebook's Luttinger–Tisza energies exactly (verified against `ltgs`).
+
 `generate_T_profile(T_hot, T_cold, T_sample, n_steps)` returns a log-spaced temperature schedule that guarantees the `--T_sample` values appear exactly as sampling stops.
 
 ### Output format (HDF5)

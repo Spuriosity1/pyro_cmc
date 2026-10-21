@@ -33,7 +33,8 @@ struct LTBond {
 static vector<LTBond> build_bonds(
         LatticeIndexing& lat,
         const vector<ipos_t>& sl_pos,
-        double J1, double J2, double J3, double J4, double Jzz)
+        double J1, double J2, double J3, double J4, double Jzz,
+        double tetra, int tetra_axis, double tetra_scale)
 {
     // Coupling shells keyed by squared spin separation (cubic cell side = 8):
     // J1 -> 8, J2 -> 24, J3 -> 32, J4 -> 40. J1 keeps its hand table because the
@@ -64,9 +65,13 @@ static vector<LTBond> build_bonds(
                 }
                 assert(beta >= 0 && "bond target not found in sl_positions");
 
+                // Magnetoelastic tetragonal distortion scales every shell's
+                // Heisenberg strength by its bond-length change (J1..J4 all respond).
+                const double j_eff = j * tetra_bond_scale(v, tetra_axis, tetra, tetra_scale);
+
                 Eigen::Matrix3d J_mat;
                 if (xxz && Jzz != 0.0) {
-                    // J_bond = j·[I + (Delta-1)·ẑ_μ ⊗ ẑ_ν]
+                    // J_bond = j_eff·I + Jzz·ẑ_μ ⊗ ẑ_ν
                     // where μ = pyro_sl of source, ν = pyro_sl of target
                     int mu = sl   % 4;
                     int nu = beta % 4;
@@ -74,10 +79,10 @@ static vector<LTBond> build_bonds(
                     const auto& zn = pyrochlore::axis[nu][2];
                     Eigen::Vector3d z_mu(zm[0], zm[1], zm[2]);
                     Eigen::Vector3d z_nu(zn[0], zn[1], zn[2]);
-                    J_mat = j * Eigen::Matrix3d::Identity()
+                    J_mat = j_eff * Eigen::Matrix3d::Identity()
                                  + Jzz * z_mu * z_nu.transpose();
                 } else {
-                    J_mat = j * Eigen::Matrix3d::Identity();
+                    J_mat = j_eff * Eigen::Matrix3d::Identity();
                 }
                 bonds.push_back({sl, beta, v, J_mat});
             }
@@ -218,6 +223,9 @@ int main(int argc, char* argv[])
     const double J3    = resolve_J3(prog);
     const double J4    = prog.get<double>("--J4");
     const double Jzz = prog.get<double>("--Jzz");
+    const double tetra       = prog.get<double>("--tetragonal");
+    const int    tetra_axis  = prog.get<int>("--tetra_axis");
+    const double tetra_scale = prog.get<double>("--tetra_scale");
 
     // Build LatticeIndexing directly — no Supercell<HeisenbergSpin> needed.
     const int L = prog.get<int>("L");
@@ -239,7 +247,7 @@ int main(int argc, char* argv[])
     const int n_sl = static_cast<int>(sl_pos.size()); // = 16
 
     const ivec3_t k_dims   = lat.size();
-    const auto bonds       = build_bonds(lat, sl_pos, J1, J2, J3, J4, Jzz);
+    const auto bonds       = build_bonds(lat, sl_pos, J1, J2, J3, J4, Jzz, tetra, tetra_axis, tetra_scale);
 
     // -----------------------------------------------------------------------
     // Minimise λ_min(k) by gradient descent (see descend()/lt_gradient()).

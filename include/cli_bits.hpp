@@ -6,6 +6,7 @@
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <ostream>
 #include <type_traits>
 
@@ -24,6 +25,36 @@ static const mat33d Heis = mat33d::from_cols(
 static const mat33d Isin = mat33d::from_cols(
         {0,0,0},{0,0,0},{0,0,1});
 };
+
+// Magnetoelastic tetragonal distortion along a cubic axis (0=x, 1=y, 2=z).
+//
+// A tetragonal distortion scales space along `axis` by a factor `s`, changing
+// every bond length and hence every exchange. Following the notebook
+// strain_bond_table() helper, a bond with (unstrained) integer displacement
+// `disp` has its coupling scaled by
+//
+//     J -> J * (1 + tetra * f),     f = 1 - |disp . scale| / |disp|,
+//
+// with scale = (1,1,s) for axis==2 (and cyclic). `f` is the fractional reduction
+// of the bond length, so `tetra` is the linear magnetoelastic response and `s`
+// sets the distortion shape. This applies to *every* shell (J1..J4): bonds
+// perpendicular to `axis` are unchanged (f=0) and the others are strengthened in
+// proportion to their projection onto `axis`. `tetra == 0` is the isotropic
+// limit. For the six nn1 (tetrahedron-edge) bonds this reproduces the original
+// "strengthen 4 of 6" split, the four axial bonds sharing one factor and the two
+// perpendicular ones another.
+inline double tetra_bond_scale(const ipos_t& disp, int axis, double tetra, double s) {
+    double d2 = 0.0, ds2 = 0.0;
+    for (int i = 0; i < 3; i++) {
+        const double c  = static_cast<double>(disp[i]);
+        const double sc = (i == axis) ? s : 1.0;
+        d2  += c * c;
+        ds2 += (sc * c) * (sc * c);
+    }
+    if (d2 == 0.0) return 1.0;
+    const double f = 1.0 - std::sqrt(ds2 / d2);
+    return 1.0 + tetra * f;
+}
 
 
 inline auto provide_physical_args(argparse::ArgumentParser& prog){
@@ -70,6 +101,25 @@ inline auto provide_physical_args(argparse::ArgumentParser& prog){
         .help("Nearest-neighbour XXZ anisotropy (local [111] frame),  Jzz * Sz Sz."
               "Jzz=0 is isotropic Heisenberg.")
         .default_value(0.0)
+        .scan<'g', double>();
+    prog.add_argument("--tetragonal")
+        .help("Magnetoelastic tetragonal distortion strength (linear response). Every "
+              "coupling J1..J4 is scaled by J*(1 + tetragonal*f), where f is the "
+              "fractional bond-length change under a scaling of --tetra_axis by "
+              "--tetra_scale. Bonds perpendicular to the axis are unchanged. "
+              "0 is the isotropic limit.")
+        .default_value(0.0)
+        .scan<'g', double>();
+    prog.add_argument("--tetra_axis")
+        .help("Axis [0,1,2] (x,y,z) of the tetragonal distortion applied by --tetragonal")
+        .choices(0,1,2)
+        .default_value(2)
+        .scan<'i', int>();
+    prog.add_argument("--tetra_scale")
+        .help("Geometric scale factor applied along --tetra_axis to define the "
+              "tetragonal distortion shape (bond-length change f). Default 0.98 "
+              "matches the notebook strain_bond_table helper.")
+        .default_value(0.98)
         .scan<'g', double>();
     prog.add_argument("--external_field", "-B")
         .help("Global magnetic field")
@@ -174,6 +224,9 @@ auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& lat, uin
     }
 
     auto Jzz = prog.get<double>("--Jzz");
+    auto tetra       = prog.get<double>("--tetragonal");
+    auto tetra_axis  = prog.get<int>("--tetra_axis");
+    auto tetra_scale = prog.get<double>("--tetra_scale");
 
     T mc(lat, hash_true_random(seed));
 
@@ -204,17 +257,45 @@ auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& lat, uin
             mat33d local_Ising = mat33d::from_cols(
                 v2a(z_nu[0] * z_mu), v2a(z_nu[1] * z_mu), v2a(z_nu[2] * z_mu));
             std::string pname = "J1_" + std::to_string(mu) + std::to_string(nu);
-            mc.define_general_coupling(pname, *nn1_pairs[k], Jzz * local_Ising + J1*coupling::Heis);
+            // Tetragonal distortion scales this edge's J1 by its bond-length change.
+            // Both entries of the pair table are +-v, so the first displacement is
+            // a faithful representative of the bond direction.
+            ipos_t disp{};
+            for (const auto& sub : *nn1_pairs[k]) { if (!sub.empty()) { disp = sub.front(); break; } }
+            double J1_bond = J1 * tetra_bond_scale(disp, tetra_axis, tetra, tetra_scale);
+            mc.define_general_coupling(pname, *nn1_pairs[k], Jzz * local_Ising + J1_bond*coupling::Heis);
         }
     }
     // Further-neighbour Heisenberg shells are keyed by squared spin separation
     // (cubic cell side = 8): J2 -> 24, J3 -> 32, J4 -> 40. The old nn3a/nn3b
     // split folds into the single dist_sq=32 shell (both shared J3).
+    //
+    // Under a tetragonal distortion each shell is split into sub-groups by the
+    // bond-length change f (bonds sharing a factor are registered together), and
+    // every sub-group is scaled by J*(1+tetra*f) -- the same magnetoelastic rule
+    // the notebook strain_bond_table() applies to J1..J4.
+    auto define_tetra_Heisenberg = [&](const std::string& name,
+            const std::vector<std::vector<ipos_t>>& shell, double J) {
+        if (tetra == 0.0) { mc.define_Heisenberg_coupling(name, shell, J); return; }
+        std::map<long long, std::vector<std::vector<ipos_t>>> by_factor;
+        for (std::size_t sl = 0; sl < shell.size(); sl++) {
+            for (const auto& d : shell[sl]) {
+                double fac = tetra_bond_scale(d, tetra_axis, tetra, tetra_scale);
+                auto& tbl = by_factor[std::llround(fac * 1e9)];
+                if (tbl.empty()) tbl.resize(shell.size());
+                tbl[sl].push_back(d);
+            }
+        }
+        int g = 0;
+        for (auto& [key, tbl] : by_factor)
+            mc.define_Heisenberg_coupling(name + "_t" + std::to_string(g++),
+                                          tbl, J * (static_cast<double>(key) * 1e-9));
+    };
     auto J4 = prog.get<double>("--J4");
-    mc.define_Heisenberg_coupling("J2", pyrochlore::neighbours_by_distance(24), J2);
-    mc.define_Heisenberg_coupling("J3", pyrochlore::neighbours_by_distance(32), J3);
+    define_tetra_Heisenberg("J2", pyrochlore::neighbours_by_distance(24), J2);
+    define_tetra_Heisenberg("J3", pyrochlore::neighbours_by_distance(32), J3);
     if (J4 != 0)
-        mc.define_Heisenberg_coupling("J4", pyrochlore::neighbours_by_distance(40), J4);
+        define_tetra_Heisenberg("J4", pyrochlore::neighbours_by_distance(40), J4);
 
     // Nearest-neighbour biquadratic K/2 (S_i·S_j)^2. Only registered when
     // nonzero so pure-linear runs keep biquad_bonds empty (zero overhead).
@@ -251,6 +332,7 @@ inline auto name_LJ123(const argparse::ArgumentParser& prog){
     auto J4 = prog.get<double>("--J4");
     auto Jzz = prog.get<double>("--Jzz");
     auto K = prog.get<double>("--K");
+    auto tetra = prog.get<double>("--tetragonal");
     int L = prog.get<int>("L");
 
     std::stringstream name;
@@ -263,6 +345,15 @@ inline auto name_LJ123(const argparse::ArgumentParser& prog){
     name <<
         "Jzz="<<Jzz<<DELIM<<
         "K="<<K<<DELIM;
+    if (tetra != 0) {
+        name << "tetra="<<tetra<<DELIM;
+        int tetra_axis = prog.get<int>("--tetra_axis");
+        if (tetra_axis != 2)
+            name << "tetra_axis="<<tetra_axis<<DELIM;
+        double tetra_scale = prog.get<double>("--tetra_scale");
+        if (tetra_scale != 0.98)
+            name << "tetra_scale="<<tetra_scale<<DELIM;
+    }
     if (prog.is_used("--Q")) {
         double Qz = prog.get<double>("--Q");
         name << "Q="<<Qz<<DELIM;
