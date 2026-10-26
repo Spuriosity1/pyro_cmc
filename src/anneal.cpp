@@ -83,11 +83,7 @@ int main (int argc, char *argv[]) {
         .help("Reference temperature for proposal distribution")
         .default_value(1.0)
         .scan<'g',double>();
-    prog.add_argument("--T_sample")
-        .help("Final temperature")
-        .nargs(argparse::nargs_pattern::at_least_one)
-        .required()
-        .scan<'g',double>();
+    declare_T_sample(prog, "Final temperature");
     prog.add_argument("--n_steps")
         .help("Number of annealing steps")
         .default_value(static_cast<size_t>(100))
@@ -129,8 +125,8 @@ int main (int argc, char *argv[]) {
 
     const double T_hot = prog.is_used("--T_hot") ? 
         prog.get<double>("--T_hot") : 10;
-    const std::vector<double> T_sample = prog.get<std::vector<double>>("--T_sample");
-    double T_cold =prog.is_used("--T_cold") ? 
+    const std::vector<double> T_sample = resolve_T_sample(prog);
+    double T_cold =prog.is_used("--T_cold") ?
         prog.get<double>("--T_cold") : *std::min_element(T_sample.begin(), T_sample.end());
 
     const size_t n_steps = prog.get<size_t>("--n_steps");

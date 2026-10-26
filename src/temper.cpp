@@ -272,10 +272,7 @@ int main(int argc, char* argv[])
     prog.add_argument("--T_ref")
         .help("Reference temperature for proposal distribution")
         .default_value(1.0).scan<'g', double>();
-    prog.add_argument("--T_sample")
-        .help("Temperatures at which to accumulate the SSF")
-        .nargs(argparse::nargs_pattern::at_least_one)
-        .required().scan<'g', double>();
+    declare_T_sample(prog);
     prog.add_argument("--n_steps")
         .help("Total number of replicas (including T_sample rungs)")
         .default_value(static_cast<size_t>(100)).scan<'i', size_t>();
@@ -314,7 +311,14 @@ int main(int argc, char* argv[])
 
     const size_t seed      = prog.get<size_t>("--seed");
     const double T_hot     = prog.is_used("--T_hot") ? prog.get<double>("--T_hot") : 10.0;
-    const std::vector<double> T_sample = prog.get<std::vector<double>>("--T_sample");
+    std::vector<double> T_sample;
+    try {
+        T_sample = resolve_T_sample(prog);
+    } catch (const std::exception& err) {
+        if (replica_id == 0) fprintf(stderr, "ERROR: %s\n", err.what());
+        MPI_Finalize();
+        return 1;
+    }
     const double T_cold    = prog.is_used("--T_cold") ?
         prog.get<double>("--T_cold") :
         *std::min_element(T_sample.begin(), T_sample.end());

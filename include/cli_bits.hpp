@@ -5,6 +5,7 @@
 #include <argparse/argparse.hpp>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <ostream>
@@ -126,6 +127,51 @@ inline auto provide_physical_args(argparse::ArgumentParser& prog){
         .nargs(3)
         .default_value(std::vector<double>({0.,0.,0.}))
         .scan<'g', double>();
+}
+
+// Declare the mutually-exclusive --T_sample / --T_file options for choosing the
+// sampling temperatures. Neither is marked required at the argparse level;
+// resolve_T_sample() enforces that exactly one is supplied.
+inline void declare_T_sample(argparse::ArgumentParser& prog,
+                             const std::string& help = "Temperatures at which to accumulate the SSF") {
+    prog.add_argument("--T_sample")
+        .help(help)
+        .nargs(argparse::nargs_pattern::at_least_one)
+        .scan<'g', double>();
+    prog.add_argument("--T_file")
+        .help("Path to a plain-text file of sampling temperatures (whitespace-"
+              "separated), parsed exactly as if passed to --T_sample. Mutually "
+              "exclusive with --T_sample.");
+}
+
+// Resolve the sampling temperatures from either --T_sample or --T_file. The file
+// is read as plain text and tokenised on whitespace, each token parsed as a
+// double -- i.e. exactly as though the values had been passed on the command
+// line to --T_sample.
+inline std::vector<double> resolve_T_sample(const argparse::ArgumentParser& prog) {
+    const bool has_sample = prog.is_used("--T_sample");
+    const bool has_file   = prog.is_used("--T_file");
+    if (has_sample && has_file)
+        throw std::runtime_error("--T_sample and --T_file are mutually exclusive");
+    if (!has_sample && !has_file)
+        throw std::runtime_error("one of --T_sample or --T_file is required");
+    if (has_sample)
+        return prog.get<std::vector<double>>("--T_sample");
+
+    const std::string path = prog.get<std::string>("--T_file");
+    std::ifstream in(path);
+    if (!in)
+        throw std::runtime_error("Cannot open --T_file: " + path);
+    std::vector<double> T;
+    double v;
+    while (in >> v) T.push_back(v);
+    if (in.bad())
+        throw std::runtime_error("Error reading --T_file: " + path);
+    if (!in.eof())
+        throw std::runtime_error("Malformed (non-numeric) entry in --T_file: " + path);
+    if (T.empty())
+        throw std::runtime_error("--T_file contained no temperatures: " + path);
+    return T;
 }
 
 // Compute the J3 that makes a (0,0,Q) spiral stationary in the single-Q spiral
