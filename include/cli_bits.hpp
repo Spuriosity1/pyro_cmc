@@ -84,11 +84,17 @@ inline auto provide_physical_args(argparse::ArgumentParser& prog){
         .help("Biquadratic interaction strength")
         .default_value(0.)
         .scan<'g', double>();
-    // prog.add_argument("--D")
-    //     .help("Dipolar interaction strength")
-    //     .default_value(0.)
-    //     .scan<'g', double>();
-    
+    prog.add_argument("--D")
+        .help("Long-range dipolar interaction strength (Ewald/Madelung summed), in the "
+              "same energy units as the exchange J's. 0 disables it (zero overhead).")
+        .default_value(0.)
+        .scan<'g', double>();
+    prog.add_argument("--ewald_alpha")
+        .help("Ewald splitting parameter alpha (1/length, cubic cell = 1 unit). "
+              "Omit for an automatic choice; results are alpha-independent.")
+        .default_value(-1.0)
+        .scan<'g', double>();
+
     prog.add_argument("--Q")
         .help("Nonzero spiral wavevector component in units of 2pi/a_cubic; J3 is set to minimise the spiral "
               "energy given J2, J4 and K (mutually exclusive with --J3). Rounded to nearest supercell-commensurate value.")
@@ -352,6 +358,18 @@ auto build_J1J2J3_h(const argparse::ArgumentParser& prog, CMC::Lattice& lat, uin
     mc.set_global_field(global_field);
 
     mc.setup_lattice();
+
+    // Long-range dipolar interactions. The Ewald tensor is built here (once);
+    // the field cache is filled from the current spins and is refreshed again by
+    // randomize_spins()/init, so the order of this call vs. the initial state is
+    // immaterial. Disabled (and zero-cost) when --D is 0.
+    auto D = prog.get<double>("--D");
+    if (D != 0) {
+        CMC::EwaldParams ep;
+        double ealpha = prog.get<double>("--ewald_alpha");
+        if (ealpha > 0) ep.alpha = ealpha;
+        mc.enable_dipolar(D, ep);
+    }
 
     return mc;
 }

@@ -148,6 +148,9 @@ int main (int argc, char *argv[]) {
         int spiral_axis = prog.get<int>("--spiral_axis");
         printf("Pre-initialising to spiral order (Q=%.10g, axis=%d)...\n", Q_given, spiral_axis);
         init_spiral_state(lat, Q_given, spiral_axis);
+        // init_spiral_state writes spins directly, bypassing the tracked updates,
+        // so refresh the long-range dipolar field cache (no-op if --D is 0).
+        mc.rebuild_dipolar_field();
     }
 
     auto B = prog.get<std::vector<double>>("-B");

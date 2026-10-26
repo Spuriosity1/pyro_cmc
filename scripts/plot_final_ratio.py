@@ -138,7 +138,7 @@ minor_ticks(ax,0.001, 'y')
 # tallest (highest-S, low-T) point in that column so the lines stay clear of the
 # inset. The L values are labelled once, on the column nearest kappa=0.06.
 y_bot = -0.01
-label_kappa = 0.06
+label_kappa = 0.08
 
 col_L = {}     # kappa -> set of L present
 col_top = {}   # kappa -> max R (finite) over that column
@@ -228,12 +228,15 @@ draw_phase_boundary(axins, boundary, colors=ins_colors, marker='+', ms=2, lw=0.8
 _p14 = argparse.ArgumentParser()
 provide_selector_args(_p14)
 args14 = _p14.parse_args(
-    ['/home/als/Projects/016_spiral_cmc/out_db/run14_L=18.csv',
+    ['/home/als/Projects/016_spiral_cmc/out_db/run16_L18.csv',
      '-x', 'K', '-s', 'T', '--bin', 'J3', 'seed'])
 boundary14 = phase_boundary(args14, 0.003)
 draw_phase_boundary(axins, boundary14,
                     colors={tr: 'red' for tr in boundary14}, marker='o', ms=1, lw=0.8,
                     labeler=lambda tr: r"$Q=1/9$ $L$=18")
+
+axins.set_xlim(0, 0.13)
+axins.set_ylim(0,0.0105)
 
 # Shade the double-Q region below the L=20 boundary (K > x0 — the subdominant
 # peak is present), leaving the single-Q region above it white. Lock the limits
@@ -241,16 +244,25 @@ draw_phase_boundary(axins, boundary14,
 tr20 = ins_L.get(20) if ins_L else None
 if tr20 is not None:
     _xlim, _ylim = axins.get_xlim(), axins.get_ylim()
+    y_top = 0.015
     b20 = boundary[tr20]
-    xs = np.concatenate(([_xlim[0]], b20['x0'], [_xlim[1]]))
-    ys = np.concatenate(([b20['T'][0]], b20['T'], [b20['T'][-1]]))
-    axins.fill_between(xs, _ylim[0], ys, color='1', hatchcolor='0', zorder=-5, hatch='......')
+    T20, x20 = np.asarray(b20['T']), np.asarray(b20['x0'])
+    # Continue the boundary along the same linear extrapolation drawn as the
+    # dashed L=20 trace, so the hatched double-q region tracks it up to the top
+    # of the T axis rather than flattening off at the last measured point.
+    k = min(3, len(T20))
+    slope, intc = np.polyfit(T20[-k:], x20[-k:], 1)
+    x_top = slope * y_top + intc
+    xs = np.concatenate(([_xlim[0]], x20, [x_top, _xlim[1]]))
+    ys = np.concatenate(([T20[0]], T20, [y_top, y_top]))
+    axins.fill_between(xs, _ylim[0], ys, color='0.8', hatchcolor='0', zorder=-5)
+    #, hatch='......')
     axins.set_xlim(_xlim)
-    axins.set_ylim(0, 0.015)
+    axins.set_ylim(0, y_top)
     tbox = dict(boxstyle='round,pad=0.15', facecolor='1', edgecolor='none')
     axins.text(0.72, 0.22, r"double-$q$", transform=axins.transAxes,
                ha='center', va='center', fontsize=6, bbox=tbox, zorder=6)
-    axins.text(0.55, 0.78, r"single-$q$", transform=axins.transAxes,
+    axins.text(0.25, 0.78, r"single-$q$", transform=axins.transAxes,
                ha='center', va='center', fontsize=6, bbox=tbox, zorder=6)
 
 # Dashed linear-fit extrapolation off the hot end of every trace, continued up
@@ -264,14 +276,14 @@ def _extrapolate(bnd, color_of, n=3):
         if len(T) < 2 or target_T <= T[-1]:
             continue
         k = min(n, len(T))
-        slope, intc = np.polyfit(T[-k:-1], x0[-k:-1], 1)
-        Tseg = np.array([T[-2], target_T])
+        slope, intc = np.polyfit(T[-k:], x0[-k:], 1)
+        Tseg = np.array([T[-1], target_T])
         axins.plot(slope * Tseg + intc, Tseg, ls='--', lw=0.8,
                    color=color_of(tr), zorder=3)
 
 
 _extrapolate(boundary, lambda tr: ins_colors[tr] if ins_colors else 'k')
-_extrapolate(boundary14, lambda tr: 'red', 4)
+# _extrapolate(boundary14, lambda tr: 'red', 4)
 
 #axins.set_yscale('log')
 axins.set_xlabel(r"$S(S+1)\kappa/|J_1|$", fontsize=6, labelpad=1)
@@ -279,7 +291,9 @@ axins.set_ylabel(r"$T/S(S+1)|J_1|$", fontsize=6, labelpad=1)
 axins.tick_params(labelsize=5)
 if boundary:
     axins.legend(fontsize=4, labelspacing=0.2, handletextpad=0.3,
-                 borderpad=0.2, framealpha=0.9)
+                 borderpad=0.2, framealpha=0.9,
+                 loc='upper left', bbox_to_anchor=(1.02, 1.0),
+                 borderaxespad=0)
 
 ax.set_ylim(-0.001, 0.05)
 ax.set_xlim(XMIN, XMAX)

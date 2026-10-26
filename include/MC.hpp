@@ -17,6 +17,9 @@
 #include <lattice_lib/supercell.hpp>
 #include <XoshiroCpp.hpp>
 #include <random>
+#include <optional>
+
+#include "dipolar_ewald.hpp"
 
 
 namespace CMC {
@@ -153,6 +156,34 @@ class InteractingHamiltonian {
     std::exponential_distribution<double> exp_dist;
     std::uniform_real_distribution<double> rand01;
 
+    // ---- long-range dipolar interactions (optional) ----------------------
+    // The Ewald-summed dipole tensor is static (spins only rotate), so it is
+    // built once in enable_dipolar(). `h_dip` caches the long-range field
+    // g_i = Σ_{j≠i} A_ij S_j at every site, excluding the on-site self block;
+    // it is kept in sync incrementally by apply_dipolar_update() and rebuilt
+    // from scratch by rebuild_dipolar_field() (after bulk spin changes and as a
+    // periodic round-off refresh). site_sl/site_cell3 memoise each site's
+    // sublattice and primitive-cell index (layout: idx = sl*Np + cell).
+    std::optional<DipolarEwald> dip;
+    std::vector<vector3::vec3d> h_dip;
+    std::vector<int> site_sl;
+    std::vector<idx3_t> site_cell3;
+    const HeisenbergSpin* spin_base = nullptr;
+
+    bool dipolar_enabled() const { return dip.has_value(); }
+    size_t site_index(const HeisenbergSpin* spin) const {
+        return static_cast<size_t>(spin - spin_base);
+    }
+
+    // Orientation-dependent on-site dipolar energy ½ S·A_ii·S (0 when disabled),
+    // differenced across a proposed move exactly like biquad_site_energy.
+    double dipolar_self_energy(const HeisenbergSpin* spin,
+            const vector3::vec3d& S) const;
+
+    // Scatter the effect of a change dS at site i into every other site's
+    // cached field: h_dip[j] += A_{ji}·dS. O(N); call on an accepted move.
+    void apply_dipolar_update(size_t i, const vector3::vec3d& dS);
+
     // helper functions
     vector3::vec3d local_linear_field(const HeisenbergSpin* spin) const;
     vector3::vec3d local_field(const HeisenbergSpin* spin) const;
@@ -200,6 +231,21 @@ class InteractingHamiltonian {
     vector3::vec3d get_global_field() const;
 
     void setup_lattice();
+
+    // Build the Ewald dipole tensor and the field cache. Call once, after
+    // setup_lattice(); a no-op path is taken everywhere when never called.
+    // `D` is the dipolar strength in the same energy units as the exchange J's.
+    void enable_dipolar(double D, EwaldParams params = {});
+
+    // Recompute the whole long-range field cache from the current spins (O(N²)).
+    // Call after any bulk change to the configuration (randomize/init/fuzz) and
+    // periodically to flush accumulated round-off from incremental updates.
+    void rebuild_dipolar_field();
+
+    // Total dipolar energy ½ Σ_{i,j} S_i·A_ij·S_j evaluated directly from the
+    // Ewald tensor (O(N²), independent of the field cache). Reference for tests;
+    // returns 0 when dipolar is disabled.
+    double total_dipolar_energy_direct() const;
 
     // Set every spin to an independent uniformly-random unit vector, so the
     // simulation never starts from the zero-initialised state (which leaves the

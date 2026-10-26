@@ -17,11 +17,11 @@ use_tex_serif()
 p = argparse.ArgumentParser()
 provide_selector_args(p)
 ddir="/home/als/Projects/016_spiral_cmc/out_db"
-files = [f'{ddir}/run16_L{L:d}.csv' for L in (9,)]
+files = [f'{ddir}/run16_L{L:d}.csv' for L in (9,18)]
 #files = [f'{ddir}/run14_L={L:d}.csv' for L in (9, 18)]
 #files = [f'{ddir}/run13_L={L:d}.csv' for L in (18,)]
 
-target_L=9
+target_L=18
 
 args= p.parse_args([*files, "-x", "T", "-s", "K", "--bin", "J3", "seed"])
 
@@ -91,25 +91,30 @@ ax_pg2 = fig.add_subplot(gs[1], sharex=ax_pg1)
 
 # Top panel.
 draw_clean(ax_pg1, series_data_at_L(points, target_L))
-ax_pg1.set_ylabel(r"$\mathcal{S}(\bm{q}_{\rm PG1})\,/\,\mathcal{S}(\bm{q}_{\rm B})$")
+ax_pg1.set_ylabel(r"$\mathcal{S}(\bm{q}_{\rm PG, hi})\,/\,\mathcal{S}(\bm{q}_{\rm B})$")
 ax_pg1.axhline(1.0, color='k', lw=0.8, ls='--', alpha=0.5)
 ax_pg1.set_ylim(-0.001, 0.08)
 ax_pg1.tick_params(labelbottom=False)   # x labels live on the bottom panel only
 
 # Label the experimental ratio
-ax_pg1.axhline(8e-3,color='r', ls='--',lw=0.5)
-ax_pg1.axvline(0.0120,color='r', ls='--',lw=0.5)
+T_expt = 0.0120
+S_expt = 8e-3
+
+ax_pg1.axhline(S_expt,color='r', ls='--',lw=0.5)
+ax_pg1.axvline(T_expt,color='r', ls='--',lw=0.5)
+ax_pg1.text(0.022,S_expt+0.002,r'$\frac{2\mathcal{S}_{\rm FC}}{3\mathcal{S}_{\rm ZFC}}$',color='r',va='bottom')
+ax_pg1.text(T_expt+0.001,0.06,'$T$=1.5K',color='r')
 
 minor_ticks(ax_pg1, 0.01, 'x')
 minor_ticks(ax_pg1, 0.001, 'y')
 
 # Bottom panel: the weaker ratio, in a shorter panel.
 draw_clean(ax_pg2, series_data_at_L(points_pg2, target_L), ms=2, lw=0.8)
-ax_pg2.set_ylabel(r"$\mathcal{S}(\bm{q}_{\rm PG2})\,/\,\mathcal{S}(\bm{q}_{\rm B})$")
+ax_pg2.set_ylabel(r"$\mathcal{S}(\bm{q}_{\rm PG, lo})\,/\,\mathcal{S}(\bm{q}_{\rm B})$")
 ax_pg2.set_xlabel(r"$T/S(S+1)|J_1|$")
-#ax_pg2.set_xlim(-xpad, 0.01+xpad)
-ax_pg2.set_ylim(-0.00001, 0.0058)
-ax_pg2.set_xscale('log')
+ax_pg2.set_xlim(0,0.03)
+ax_pg2.set_ylim(-0.00001, 0.0018)
+# ax_pg2.set_xscale('log')
 #ax_pg2.set_yscale('log')
 minor_ticks(ax_pg2, 1e-4, 'y')
 
