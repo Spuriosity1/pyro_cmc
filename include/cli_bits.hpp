@@ -397,6 +397,7 @@ inline auto name_LJ123(const argparse::ArgumentParser& prog){
     auto Jzz = prog.get<double>("--Jzz");
     auto K = prog.get<double>("--K");
     auto tetra = prog.get<double>("--tetragonal");
+    auto D = prog.get<double>("--D");
     int L = prog.get<int>("L");
 
     std::stringstream name;
@@ -409,6 +410,8 @@ inline auto name_LJ123(const argparse::ArgumentParser& prog){
     name <<
         "Jzz="<<Jzz<<DELIM<<
         "K="<<K<<DELIM;
+    if (D != 0) 
+        name << "D="<<D<<DELIM;
     if (tetra != 0) {
         name << "tetra="<<tetra<<DELIM;
         int tetra_axis = prog.get<int>("--tetra_axis");
