@@ -55,7 +55,7 @@ g_deps = [
 
 
 mc_lib = static_library('cmc_lib',
-  files('src/MC.cpp'),
+  files('src/MC.cpp', 'src/dipolar_ewald.cpp'),
   dependencies: g_deps,
   include_directories: CMC_inc
   )

@@ -135,6 +135,9 @@ namespace CMC {
             v /= n;
             s.S = v;
         }
+        // The long-range field cache depends on every spin, so refresh it after
+        // this bulk reset (no-op when dipolar is disabled).
+        rebuild_dipolar_field();
     }
 
 
@@ -188,6 +191,79 @@ namespace CMC {
         for (auto& s : spin_list) {h += s->S;}
     }
 
+    void InteractingHamiltonian::enable_dipolar(double D, EwaldParams params){
+        auto& spins = lat->get_objects<HeisenbergSpin>();
+        const auto& sl_pos = std::get<SlPos<HeisenbergSpin>>(lat->sl_positions);
+        dip.emplace(lat->lattice, sl_pos, D, params);
+
+        const int Np = lat->lattice.num_primitive_cells();
+        const size_t N = spins.size();
+        spin_base = spins.data();
+        h_dip.assign(N, vector3::vec3d{0,0,0});
+        site_sl.resize(N);
+        site_cell3.resize(N);
+        for (size_t s = 0; s < N; ++s) {
+            // Site layout is sl-major: idx = sl*Np + cell (see setup_lattice).
+            site_sl[s]    = static_cast<int>(s / Np);
+            site_cell3[s] = lat->lattice.idx3_from_flat(static_cast<idx_t>(s % Np));
+        }
+        rebuild_dipolar_field();
+    }
+
+    void InteractingHamiltonian::rebuild_dipolar_field(){
+        if (!dipolar_enabled()) return;
+        auto& spins = lat->get_objects<HeisenbergSpin>();
+        const size_t N = spins.size();
+        for (size_t i = 0; i < N; ++i) {
+            const int sl_i = site_sl[i];
+            const idx3_t& ci = site_cell3[i];
+            vector3::vec3d g{0,0,0};
+            for (size_t j = 0; j < N; ++j) {
+                if (j == i) continue;
+                // g_i += A(sl_i, sl_j, cell_j − cell_i)·S_j
+                const idx_t dflat = dip->disp_flat(ci, site_cell3[j]);
+                g += dip->block(sl_i, site_sl[j], dflat) * spins[j].S;
+            }
+            h_dip[i] = g;
+        }
+    }
+
+    double InteractingHamiltonian::dipolar_self_energy(const HeisenbergSpin* spin,
+            const vector3::vec3d& S) const {
+        if (!dipolar_enabled()) return 0.0;
+        const int sl = site_sl[site_index(spin)];
+        return 0.5 * dot(S, dip->self_block(sl) * S);
+    }
+
+    double InteractingHamiltonian::total_dipolar_energy_direct() const {
+        if (!dipolar_enabled()) return 0.0;
+        auto& spins = lat->get_objects<HeisenbergSpin>();
+        const size_t N = spins.size();
+        double E = 0.0;
+        for (size_t i = 0; i < N; ++i) {
+            const int sl_i = site_sl[i];
+            const idx3_t& ci = site_cell3[i];
+            for (size_t j = 0; j < N; ++j) {
+                const idx_t dflat = dip->disp_flat(ci, site_cell3[j]);
+                E += dot(spins[i].S, dip->block(sl_i, site_sl[j], dflat) * spins[j].S);
+            }
+        }
+        return 0.5 * E;
+    }
+
+    void InteractingHamiltonian::apply_dipolar_update(size_t i,
+            const vector3::vec3d& dS){
+        const int sl_i = site_sl[i];
+        const idx3_t& ci = site_cell3[i];
+        const size_t N = h_dip.size();
+        for (size_t j = 0; j < N; ++j) {
+            if (j == i) continue;
+            // g_j += A(sl_j, sl_i, cell_i − cell_j)·dS
+            const idx_t dflat = dip->disp_flat(site_cell3[j], ci);
+            h_dip[j] += dip->block(site_sl[j], sl_i, dflat) * dS;
+        }
+    }
+
     vector3::vec3d InteractingHamiltonian::local_linear_field(const HeisenbergSpin *spin) const
     {
         vector3::vec3d h_loc{0,0,0};
@@ -201,6 +277,10 @@ namespace CMC {
             accumulate_field(tmp, shell.bonds);
             h_loc += *shell.J * tmp; // simple scalar multiplication
         }
+        // Long-range dipolar field g_i (cached; excludes the on-site self block,
+        // which is handled separately as dipolar_self_energy).
+        if (dipolar_enabled())
+            h_loc += h_dip[site_index(spin)];
         return h_loc;
     }
 
@@ -247,8 +327,12 @@ namespace CMC {
 
         double dE = (new_E - curr_E)
                   + biquad_site_energy(spin, new_S)
-                  - biquad_site_energy(spin, spin->S);
+                  - biquad_site_energy(spin, spin->S)
+                  + dipolar_self_energy(spin, new_S)
+                  - dipolar_self_energy(spin, spin->S);
         if (dE < 0 || rand01(rng) < exp(-dE / T)) {
+            if (dipolar_enabled())
+                apply_dipolar_update(site_index(spin), new_S - spin->S);
             spin->S = new_S;
             return 1;
         }
@@ -280,22 +364,29 @@ namespace CMC {
             return 0;
 
         // Rotation about h_loc leaves the linear single-site energy S·h_loc
-        // invariant, so with no biquad terms the move is microcanonical and
-        // always accepted (bit-for-bit the previous behaviour, zero overhead).
-        if (spin->biquad_bonds.empty()) {
+        // invariant (the cached dipolar field g_i is part of h_loc, so it is
+        // conserved too), so with no on-site residual the move is microcanonical
+        // and always accepted (bit-for-bit the previous behaviour, zero overhead).
+        if (spin->biquad_bonds.empty() && !dipolar_enabled()) {
             rotate_about_vector(spin->S, h_loc, 2*M_PI*rand01(rng));
             return 1;
         }
 
-        // Biquadratic terms are not conserved by the rotation; the proposal is
-        // symmetric (uniform angle), so a plain Metropolis test on the biquad
-        // residual restores detailed balance.
+        // Biquadratic terms and the dipolar self-energy ½S·A_ii·S are not
+        // conserved by the rotation (A_ii is isotropic for a cubic cell, so that
+        // residual vanishes there); the proposal is symmetric (uniform angle), so
+        // a plain Metropolis test on the residual restores detailed balance.
         auto old_S = spin->S;
-        double old_bq = biquad_site_energy(spin, old_S);
+        double old_res = biquad_site_energy(spin, old_S)
+                       + dipolar_self_energy(spin, old_S);
         rotate_about_vector(spin->S, h_loc, 2*M_PI*rand01(rng));
-        double dE = biquad_site_energy(spin, spin->S) - old_bq;
-        if (dE <= 0 || rand01(rng) < exp(-dE / T))
+        double dE = biquad_site_energy(spin, spin->S)
+                  + dipolar_self_energy(spin, spin->S) - old_res;
+        if (dE <= 0 || rand01(rng) < exp(-dE / T)) {
+            if (dipolar_enabled())
+                apply_dipolar_update(site_index(spin), spin->S - old_S);
             return 1;
+        }
         spin->S = old_S;
         return 0;
     }
@@ -392,13 +483,17 @@ namespace CMC {
 
         double dE = dot(new_S, h_loc) - curr_E
                   + biquad_site_energy(spin, new_S)
-                  - biquad_site_energy(spin, spin->S);
+                  - biquad_site_energy(spin, spin->S)
+                  + dipolar_self_energy(spin, new_S)
+                  - dipolar_self_energy(spin, spin->S);
         // Skewed-detailed-balance acceptance min(1, [sinψ_new/sinψ_old]·e^{-ΔE/T}).
-        // The biquad residual enters only through the symmetric energy, so the
-        // linear-field Jacobian (axis-length ratio) is unchanged.
+        // The biquad/dipolar residual enters only through the symmetric energy, so
+        // the linear-field Jacobian (axis-length ratio) is unchanged.
         // rand01 < (ratio ≥ 1) is always true, so no explicit clamp is needed.
         double accept_ratio = sqrt(axis_n2_new / axis_n2_old) * exp(-dE / T);
         if (rand01(rng) < accept_ratio) {
+            if (dipolar_enabled())
+                apply_dipolar_update(site_index(spin), new_S - spin->S);
             spin->S = new_S;
             return 1;
         }
@@ -441,10 +536,14 @@ namespace CMC {
 
         double dE = dot(new_S, h_loc) - curr_E
                   + biquad_site_energy(spin, new_S)
-                  - biquad_site_energy(spin, spin->S);
+                  - biquad_site_energy(spin, spin->S)
+                  + dipolar_self_energy(spin, new_S)
+                  - dipolar_self_energy(spin, spin->S);
 
         double accept_ratio =  exp(-dE / T);
         if (rand01(rng) < accept_ratio) {
+            if (dipolar_enabled())
+                apply_dipolar_update(site_index(spin), new_S - spin->S);
             spin->S = new_S;
             return 1;
         }
@@ -478,8 +577,12 @@ namespace CMC {
     double InteractingHamiltonian::total_energy_per_unit_cell() const{
         double E = 0;
         for (const auto& s : std::get<std::vector<HeisenbergSpin>>(lat->objects)){
+            // local_linear_field already includes the long-range dipolar field
+            // g_i, so 0.5·S·field accounts for ½Σ_{i≠j}; the on-site self block
+            // ½S·A_ii·S (dipolar_self_energy) completes ½Σ_{i,j}.
             E += 0.5 * dot(s.S, local_linear_field(&s));
             E += 0.5 * biquad_site_energy(&s, s.S);
+            E += dipolar_self_energy(&s, s.S);
             E -= dot(s.S, global_field);
         }
         return E / lat->lattice.num_primitive_cells();
@@ -493,6 +596,7 @@ namespace CMC {
             auto s = &spins[j];
             E_vec[j] += alpha * (
                 0.5 * (dot(s->S, local_linear_field(s)) + biquad_site_energy(s, s->S))
+                + dipolar_self_energy(s, s->S)
                 - dot(s->S, global_field)
                 );
         }

@@ -28,3 +28,13 @@ bench_speed_bin = executable('bench_speed',
   include_directories: CMC_inc,
   install: false
   )
+
+dipolar_ewald_test_bin = executable('dipolar_ewald_test',
+  files('dipolar_ewald_test.cpp'),
+  dependencies: g_deps,
+  link_with: mc_lib,
+  include_directories: CMC_inc,
+  install: false
+  )
+
+test('dipolar Ewald consistency', dipolar_ewald_test_bin)
